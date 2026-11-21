@@ -86,7 +86,7 @@ fn menu_screen(commands: &mut Commands, page: MenuPage) -> Entity {
 
 fn spawn_main(mut commands: Commands) {
     let screen = menu_screen(&mut commands, MenuPage::Main);
-    ui::title(&mut commands, screen, "BARNOCRAFT", 72.0);
+    ui::title(&mut commands, screen, "NOCUBECRAFT", 72.0);
     ui::label(&mut commands, screen, "Выживание в мире из маленьких блоков", 18.0, Color::srgba(1.0, 1.0, 1.0, 0.75));
     let panel = ui::panel(&mut commands, screen, 320.0);
     commands.entity(panel).insert(Node {

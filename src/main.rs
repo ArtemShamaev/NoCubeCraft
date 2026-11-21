@@ -1,9 +1,13 @@
+// No console window behind the game on Windows.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
 mod body;
 mod building;
 mod console;
 mod containers;
 mod crafting;
 mod effects;
+mod embedded;
 mod falling;
 mod hands;
 mod hud;
@@ -25,7 +29,7 @@ mod ui;
 mod worlds;
 
 use avian3d::prelude::*;
-use bevy::prelude::*;
+use bevy::{asset::io::AssetSourceId, prelude::*};
 
 /// Title screen or a world being played.
 #[derive(States, Default, Debug, Clone, PartialEq, Eq, Hash)]
@@ -62,24 +66,14 @@ pub enum Mode {
 #[derive(Resource, Default)]
 pub struct Creative(pub bool);
 
-/// `assets` next to the executable when shipped, the source tree's otherwise.
-fn asset_root() -> String {
-    let beside_exe = std::env::current_exe().ok().and_then(|e| Some(e.parent()?.join("assets")));
-    match beside_exe {
-        Some(dir) if dir.is_dir() => dir.to_string_lossy().into_owned(),
-        _ => concat!(env!("CARGO_MANIFEST_DIR"), "/assets").to_string(),
-    }
-}
-
 fn main() {
     App::new()
+        .register_asset_source(AssetSourceId::Default, embedded::source())
         .add_plugins((
-            DefaultPlugins
-                .set(WindowPlugin {
-                    primary_window: Some(Window { title: "Barnocraft".into(), ..default() }),
-                    ..default()
-                })
-                .set(AssetPlugin { file_path: asset_root(), ..default() }),
+            DefaultPlugins.set(WindowPlugin {
+                primary_window: Some(Window { title: "NoCubeCraft".into(), ..default() }),
+                ..default()
+            }),
             PhysicsPlugins::default(),
         ))
         .init_state::<AppState>()

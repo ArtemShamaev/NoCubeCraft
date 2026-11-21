@@ -24,7 +24,7 @@ pub struct TerrainExtension {
 
 impl MaterialExtension for TerrainExtension {
     fn fragment_shader() -> ShaderRef {
-        "embedded://barnocraft/terrain/terrain.wesl".into()
+        "embedded://nocubecraft/terrain/terrain.wesl".into()
     }
 }
 

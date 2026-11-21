@@ -1,5 +1,5 @@
 [package]
-name = "barnocraft"
+name = "nocubecraft"
 version = "0.1.0"
 edition = "2024"
 
@@ -16,6 +16,10 @@ opt-level = 1
 
 [profile.dev.package."*"]
 opt-level = 3
+
+# Symbols would triple the size of the single-file game.
+[profile.release]
+strip = true
 
 [lints.clippy]
 # Bevy systems take their dependencies as arguments.

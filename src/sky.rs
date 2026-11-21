@@ -97,7 +97,7 @@ struct SkyParams {
 
 impl Material for SkyMaterial {
     fn fragment_shader() -> ShaderRef {
-        "embedded://barnocraft/shaders/sky.wesl".into()
+        "embedded://nocubecraft/shaders/sky.wesl".into()
     }
 
     fn specialize(

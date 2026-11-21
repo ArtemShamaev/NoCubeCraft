@@ -63,7 +63,7 @@ pub struct WaterExtension {}
 
 impl MaterialExtension for WaterExtension {
     fn fragment_shader() -> ShaderRef {
-        "embedded://barnocraft/terrain/water.wesl".into()
+        "embedded://nocubecraft/terrain/water.wesl".into()
     }
 }
 

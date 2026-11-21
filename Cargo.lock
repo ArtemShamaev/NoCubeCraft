@@ -479,18 +479,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "barnocraft"
-version = "0.1.0"
-dependencies = [
- "avian3d",
- "bevy",
- "meshopt",
- "noise",
- "ron",
- "serde",
-]
-
-[[package]]
 name = "base64"
 version = "0.23.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4102,6 +4090,18 @@ dependencies = [
  "cfg-if",
  "cfg_aliases",
  "libc",
+]
+
+[[package]]
+name = "nocubecraft"
+version = "0.1.0"
+dependencies = [
+ "avian3d",
+ "bevy",
+ "meshopt",
+ "noise",
+ "ron",
+ "serde",
 ]
 
 [[package]]

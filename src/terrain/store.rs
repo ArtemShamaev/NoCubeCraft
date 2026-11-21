@@ -166,7 +166,7 @@ impl VoxelStore {
         let mut r = Reader(bytes);
         let mut edited = HashMap::new();
         if r.take(4)? != MAGIC {
-            return Err("not a Barnocraft world file".into());
+            return Err("not a NoCubeCraft world file".into());
         }
         for _ in 0..r.u32()? {
             let chunk = IVec3::new(r.i32()?, r.i32()?, r.i32()?);

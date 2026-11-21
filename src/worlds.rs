@@ -11,9 +11,9 @@ use serde::{Deserialize, Serialize};
 
 const INFO_FILE: &str = "world.ron";
 
-/// `$XDG_DATA_HOME/barnocraft` and its equivalents; `BARNOCRAFT_DATA` overrides it.
+/// `$XDG_DATA_HOME/nocubecraft` and its equivalents; `NOCUBECRAFT_DATA` overrides it.
 pub fn data_dir() -> PathBuf {
-    if let Some(dir) = std::env::var_os("BARNOCRAFT_DATA") {
+    if let Some(dir) = std::env::var_os("NOCUBECRAFT_DATA") {
         return dir.into();
     }
     let base = std::env::var_os("XDG_DATA_HOME")
@@ -21,7 +21,13 @@ pub fn data_dir() -> PathBuf {
         .or_else(|| std::env::var_os("APPDATA").map(PathBuf::from))
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/share")))
         .unwrap_or_else(|| PathBuf::from("."));
-    base.join("barnocraft")
+    let dir = base.join("nocubecraft");
+    // Worlds from before the game was renamed come along.
+    let old = base.join("barnocraft");
+    if !dir.exists() && old.is_dir() {
+        let _ = std::fs::rename(&old, &dir);
+    }
+    dir
 }
 
 fn worlds_dir() -> PathBuf {

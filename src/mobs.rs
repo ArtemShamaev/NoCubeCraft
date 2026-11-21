@@ -1,4 +1,5 @@
-//! Creatures: sheep graze by day, zombies hunt the player at night.
+//! Creatures: farm animals graze by day, monsters hunt the player at night; which ones
+//! depends on the biome.
 
 use std::f32::consts::TAU;
 
@@ -17,26 +18,19 @@ use crate::{
     props::{Prop, TORCH_SAFE_RADIUS},
     sky::TimeOfDay,
     survival::Vitals,
-    terrain::{CELL, Material, SEA_LEVEL, Terrain},
+    terrain::{Biome, CELL, Material, SEA_LEVEL, Terrain},
 };
 
-const MAX_SHEEP: usize = 6;
-const MAX_ZOMBIES: usize = 4;
-const SHEEP_SPAWN_SECS: f32 = 4.0;
-const ZOMBIE_SPAWN_SECS: f32 = 12.0;
+const MAX_ANIMALS: usize = 8;
+const MAX_MONSTERS: usize = 5;
+const ANIMAL_SPAWN_SECS: f32 = 4.0;
+const MONSTER_SPAWN_SECS: f32 = 10.0;
 const SPAWN_MIN_DISTANCE: f32 = 16.0;
 const SPAWN_MAX_DISTANCE: f32 = 26.0;
 const DESPAWN_DISTANCE: f32 = 110.0;
 
-const SHEEP_HEALTH: f32 = 8.0;
-const SHEEP_WALK: f32 = 1.3;
-const SHEEP_FLEE: f32 = 4.5;
-const ZOMBIE_HEALTH: f32 = 20.0;
-const ZOMBIE_SPEED: f32 = 3.0;
-const ZOMBIE_SIGHT: f32 = 40.0;
-const ZOMBIE_REACH: f32 = 1.5;
-const ZOMBIE_DAMAGE: f32 = 2.0;
-const ZOMBIE_ATTACK_SECS: f32 = 1.2;
+const SIGHT: f32 = 40.0;
+const ATTACK_SECS: f32 = 1.2;
 /// How long a body lies after dying.
 const DEATH_SECS: f32 = 1.4;
 /// Health per second zombies lose in daylight.
@@ -46,7 +40,9 @@ pub struct MobsPlugin;
 
 impl Plugin for MobsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup)
+        app.add_message::<Summon>()
+            .add_systems(Startup, setup)
+            .add_systems(Update, summon.run_if(in_state(AppState::Game)))
             .add_systems(
                 Update,
                 (spawn_mobs, think).chain().before(MoveBodies).run_if(|mode: Option<Res<State<Mode>>>| {
@@ -61,6 +57,145 @@ impl Plugin for MobsPlugin {
 pub enum MobKind {
     Sheep,
     Zombie,
+    Cow,
+    Pig,
+    Chicken,
+    Spider,
+    Wolf,
+}
+
+/// What makes each kind of creature different.
+#[derive(Clone, Copy)]
+pub struct Species {
+    health: f32,
+    radius: f32,
+    height: f32,
+    walk: f32,
+    run: f32,
+    /// Damage per bite; zero for animals, which flee instead.
+    pub damage: f32,
+    /// Items dropped: item, at least, at most.
+    drops: &'static [(Item, u32, u32)],
+    model: &'static str,
+    /// Clip indices in the glTF file: idle, walk, run, attack, hurt, death.
+    clips: [usize; 6],
+    scale: f32,
+}
+
+/// A creature to put into the world right away (the `summon` cheat).
+#[derive(Message)]
+pub struct Summon {
+    pub kind: MobKind,
+    pub at: Vec3,
+    pub yaw: f32,
+}
+
+fn summon(mut commands: Commands, mut summons: MessageReader<Summon>, models: Res<MobModels>) {
+    for s in summons.read() {
+        spawn_mob(&mut commands, &models, s.kind, s.at, s.yaw);
+    }
+}
+
+impl MobKind {
+    pub fn named(name: &str) -> Option<MobKind> {
+        MobKind::ALL.into_iter().find(|k| format!("{k:?}").eq_ignore_ascii_case(name))
+    }
+
+    pub const ALL: [MobKind; 7] =
+        [MobKind::Sheep, MobKind::Zombie, MobKind::Cow, MobKind::Pig, MobKind::Chicken, MobKind::Spider, MobKind::Wolf];
+
+    pub fn species(self) -> &'static Species {
+        match self {
+            MobKind::Sheep => &Species {
+                health: 8.0,
+                radius: 0.45,
+                height: 1.1,
+                walk: 1.3,
+                run: 4.5,
+                damage: 0.0,
+                drops: &[(Item::Mutton, 1, 2), (Item::Wool, 1, 2)],
+                model: "models/sheep.glb",
+                clips: [3, 7, 6, 1, 1, 0],
+                scale: 0.55,
+            },
+            MobKind::Cow => &Species {
+                health: 10.0,
+                radius: 0.55,
+                height: 1.4,
+                walk: 1.1,
+                run: 4.0,
+                damage: 0.0,
+                drops: &[(Item::Beef, 1, 3)],
+                model: "models/cow.glb",
+                clips: [12, 9, 4, 0, 6, 2],
+                scale: 0.3,
+            },
+            MobKind::Pig => &Species {
+                health: 10.0,
+                radius: 0.4,
+                height: 0.9,
+                walk: 1.2,
+                run: 4.5,
+                damage: 0.0,
+                drops: &[(Item::Porkchop, 1, 3)],
+                model: "models/pig.glb",
+                clips: [2, 7, 6, 1, 1, 0],
+                scale: 0.55,
+            },
+            MobKind::Chicken => &Species {
+                health: 4.0,
+                radius: 0.25,
+                height: 0.6,
+                walk: 1.0,
+                run: 3.5,
+                damage: 0.0,
+                drops: &[(Item::Chicken, 1, 1)],
+                model: "models/chicken.glb",
+                clips: [3, 4, 4, 0, 0, 1],
+                scale: 0.48,
+            },
+            MobKind::Zombie => &Species {
+                health: 20.0,
+                radius: 0.35,
+                height: 1.8,
+                walk: 1.2,
+                run: 3.0,
+                damage: 2.0,
+                drops: &[],
+                model: "models/zombie.glb",
+                clips: [3, 6, 5, 0, 2, 1],
+                scale: 0.62,
+            },
+            MobKind::Spider => &Species {
+                health: 14.0,
+                radius: 0.6,
+                height: 0.8,
+                walk: 1.5,
+                run: 4.2,
+                damage: 2.0,
+                drops: &[],
+                model: "models/spider.glb",
+                clips: [2, 4, 4, 0, 0, 1],
+                scale: 0.42,
+            },
+            MobKind::Wolf => &Species {
+                health: 12.0,
+                radius: 0.4,
+                height: 1.0,
+                walk: 1.4,
+                run: 5.0,
+                damage: 3.0,
+                drops: &[],
+                model: "models/wolf.glb",
+                clips: [11, 8, 3, 0, 5, 1],
+                scale: 0.36,
+            },
+        }
+    }
+
+    pub fn hostile(self) -> bool {
+        self.species().damage > 0.0
+    }
 }
 
 #[derive(Component)]
@@ -69,7 +204,7 @@ pub struct Mob {
     pub health: f32,
     /// Seconds left of the red flash after being hit.
     pub flash: f32,
-    /// Seconds left of running away (sheep).
+    /// Seconds left of running away (animals).
     pub scared: f32,
     /// Seconds until the next wander decision or attack.
     timer: f32,
@@ -82,11 +217,16 @@ pub struct Mob {
 
 impl Mob {
     fn new(kind: MobKind) -> Self {
-        let health = match kind {
-            MobKind::Sheep => SHEEP_HEALTH,
-            MobKind::Zombie => ZOMBIE_HEALTH,
-        };
-        Self { kind, health, flash: 0.0, scared: 0.0, timer: 0.0, heading: Vec3::ZERO, since_attack: 9.0, dying: None }
+        Self {
+            kind,
+            health: kind.species().health,
+            flash: 0.0,
+            scared: 0.0,
+            timer: 0.0,
+            heading: Vec3::ZERO,
+            since_attack: 9.0,
+            dying: None,
+        }
     }
 
     pub fn alive(&self) -> bool {
@@ -120,27 +260,19 @@ struct Model {
     scale: f32,
 }
 
+/// One model per kind, in `MobKind::ALL` order.
 #[derive(Resource)]
-struct MobModels {
-    sheep: Model,
-    zombie: Model,
-}
+struct MobModels(Vec<Model>);
 
 impl MobModels {
     fn get(&self, kind: MobKind) -> &Model {
-        match kind {
-            MobKind::Sheep => &self.sheep,
-            MobKind::Zombie => &self.zombie,
-        }
+        &self.0[kind as usize]
     }
 }
 
-/// Clip indices inside each glTF file, in the order the file lists them.
-const SHEEP_CLIPS: [usize; 6] = [3, 7, 6, 1, 1, 0]; // eating idle, walk, run, headbutt, headbutt, death
-const ZOMBIE_CLIPS: [usize; 6] = [3, 6, 5, 0, 2, 1]; // idle, walk, run, attack, hit, death
-
 fn setup(mut commands: Commands, server: Res<AssetServer>, mut graphs: ResMut<Assets<AnimationGraph>>) {
-    let mut load = |path: &'static str, clips: [usize; 6], scale: f32| {
+    let mut load = |kind: MobKind| {
+        let Species { model: path, clips, scale, .. } = *kind.species();
         let (graph, nodes) =
             AnimationGraph::from_clips(clips.map(|i| server.load(GltfAssetLabel::Animation(i).from_asset(path))));
         Model {
@@ -155,10 +287,7 @@ fn setup(mut commands: Commands, server: Res<AssetServer>, mut graphs: ResMut<As
             scale,
         }
     };
-    commands.insert_resource(MobModels {
-        sheep: load("models/sheep.glb", SHEEP_CLIPS, 0.55),
-        zombie: load("models/zombie.glb", ZOMBIE_CLIPS, 0.62),
-    });
+    commands.insert_resource(MobModels(MobKind::ALL.map(&mut load).into()));
 }
 
 /// Links a mob to the animation player inside its model, once the model has spawned.
@@ -169,10 +298,7 @@ struct Animated {
 }
 
 fn spawn_mob(commands: &mut Commands, models: &MobModels, kind: MobKind, at: Vec3, yaw: f32) {
-    let body = match kind {
-        MobKind::Sheep => Body::new(0.45, 1.1),
-        MobKind::Zombie => Body::new(0.35, 1.8),
-    };
+    let body = Body::new(kind.species().radius, kind.species().height);
     let collider = Collider::compound(vec![(body.center_offset(), Quat::IDENTITY, body.collider())]);
     let model = models.get(kind);
     let mob = commands
@@ -222,19 +348,18 @@ fn spawn_mobs(
     player: Single<&Transform, (With<Player>, With<Body>)>,
     mobs: Query<&Mob>,
     props: Query<(&Prop, &Transform)>,
-    mut sheep_timer: Local<f32>,
-    mut zombie_timer: Local<f32>,
+    mut animal_timer: Local<f32>,
+    mut monster_timer: Local<f32>,
 ) {
     let dt = time.delta_secs();
     let night = time_of_day.is_night();
-    let count = |kind| mobs.iter().filter(|m| m.kind == kind).count();
-    let (kind, timer, period, max) = if night {
-        (MobKind::Zombie, &mut *zombie_timer, ZOMBIE_SPAWN_SECS, MAX_ZOMBIES)
+    let (timer, period, max) = if night {
+        (&mut *monster_timer, MONSTER_SPAWN_SECS, MAX_MONSTERS)
     } else {
-        (MobKind::Sheep, &mut *sheep_timer, SHEEP_SPAWN_SECS, MAX_SHEEP)
+        (&mut *animal_timer, ANIMAL_SPAWN_SECS, MAX_ANIMALS)
     };
     *timer += dt;
-    if *timer < period || count(kind) >= max {
+    if *timer < period || mobs.iter().filter(|m| m.kind.hostile() == night).count() >= max {
         return;
     }
     *timer = 0.0;
@@ -243,6 +368,18 @@ fn spawn_mobs(
     let angle = rand01(seed) * TAU;
     let distance = SPAWN_MIN_DISTANCE + rand01(seed ^ 0x9e37) * (SPAWN_MAX_DISTANCE - SPAWN_MIN_DISTANCE);
     let xz = player.translation + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance;
+    // Each biome has its own creatures.
+    let pick = |kinds: &[MobKind]| kinds.get((rand01(seed ^ 0x3c6e) * kinds.len() as f32) as usize).copied();
+    let kind = match (night, terrain.biome(xz.x, xz.z)) {
+        (false, Biome::Plains | Biome::Forest) => pick(&[MobKind::Sheep, MobKind::Cow, MobKind::Pig, MobKind::Chicken]),
+        (false, Biome::Savanna) => pick(&[MobKind::Cow, MobKind::Sheep]),
+        (false, Biome::Swamp) => pick(&[MobKind::Pig, MobKind::Chicken]),
+        (false, Biome::Taiga | Biome::Snowy) => pick(&[MobKind::Sheep]),
+        (false, Biome::Desert) => None,
+        (true, Biome::Taiga | Biome::Snowy) => pick(&[MobKind::Wolf, MobKind::Wolf, MobKind::Zombie]),
+        (true, _) => pick(&[MobKind::Zombie, MobKind::Zombie, MobKind::Spider]),
+    };
+    let Some(kind) = kind else { return };
     let top = terrain.surface_height(xz.x, xz.z) + 20.0;
     if !terrain.is_ready_around(xz.with_y(top - 20.0)) {
         return;
@@ -254,13 +391,13 @@ fn spawn_mobs(
     if hit.normal.y < 0.7 || ground.y < SEA_LEVEL + 0.5 {
         return;
     }
-    if kind == MobKind::Sheep
+    if !kind.hostile()
         && terrain.block(((ground - Vec3::Y * 0.1) / CELL).floor().as_ivec3()).material != Material::Grass
     {
         return;
     }
     let lit = props.iter().any(|(p, t)| p.0 == PropKind::Torch && t.translation.distance(ground) < TORCH_SAFE_RADIUS);
-    if kind == MobKind::Zombie && lit {
+    if kind.hostile() && lit {
         return;
     }
     spawn_mob(&mut commands, &models, kind, ground + Vec3::Y * 0.05, angle);
@@ -296,20 +433,21 @@ fn think(
         }
         let seed = (entity.to_bits() as u32).wrapping_mul(2_654_435_761) ^ (time.elapsed_secs() * 10.0) as u32;
 
+        let species = mob.kind.species();
         let mut wish = mob.heading;
-        match mob.kind {
-            MobKind::Sheep if mob.scared > 0.0 => {
-                wish = (-to_player).with_y(0.0).normalize_or_zero() * SHEEP_FLEE;
+        match mob.kind.hostile() {
+            false if mob.scared > 0.0 => {
+                wish = (-to_player).with_y(0.0).normalize_or_zero() * species.run;
             }
-            MobKind::Zombie if alive && to_player.length() < ZOMBIE_SIGHT => {
+            true if alive && to_player.length() < SIGHT => {
                 let flat = to_player.with_y(0.0);
-                wish = flat.normalize_or_zero() * ZOMBIE_SPEED;
-                if flat.length() < ZOMBIE_REACH && to_player.y.abs() < 2.0 {
+                wish = flat.normalize_or_zero() * species.run;
+                if flat.length() < species.radius + 1.15 && to_player.y.abs() < 2.0 {
                     wish = Vec3::ZERO;
                     if mob.timer <= 0.0 {
-                        mob.timer = ZOMBIE_ATTACK_SECS;
+                        mob.timer = ATTACK_SECS;
                         mob.since_attack = 0.0;
-                        vitals.damage(ZOMBIE_DAMAGE);
+                        vitals.damage(species.damage);
                         if let Some(body) = player_body {
                             body.velocity += flat.normalize_or_zero() * 5.0 + Vec3::Y * 3.0;
                             body.ground_normal = None;
@@ -321,11 +459,10 @@ fn think(
                 // Wander: pick a direction or stand still for a few seconds.
                 mob.timer = 2.0 + rand01(seed) * 5.0;
                 let angle = rand01(seed ^ 0x51ed) * TAU;
-                let speed = if mob.kind == MobKind::Sheep { SHEEP_WALK } else { ZOMBIE_SPEED * 0.4 };
                 mob.heading = if rand01(seed ^ 0x2545) < 0.4 {
                     Vec3::ZERO
                 } else {
-                    Vec3::new(angle.cos(), 0.0, angle.sin()) * speed
+                    Vec3::new(angle.cos(), 0.0, angle.sin()) * species.walk
                 };
                 wish = mob.heading;
             }
@@ -371,15 +508,21 @@ fn die(
         }
         mob.dying = Some(DEATH_SECS);
         // Sunburnt zombies far away just vanish; only the player's kills give loot.
-        if mob.kind == MobKind::Sheep && transform.translation.distance(player.translation) < 8.0 {
-            let seed = (entity.to_bits() as u32) ^ (time.elapsed_secs() * 1000.0) as u32;
-            let mutton = 1 + (rand01(seed) * 2.0) as u32;
-            let wool = 1 + (rand01(seed ^ 0x77) * 2.0) as u32;
-            let lost = inventory.add(Item::Mutton, mutton) + inventory.add(Item::Wool, wool);
-            toast.show(format!("+{mutton} {}, +{wool} {}", Item::Mutton.name(), Item::Wool.name()));
-            if lost > 0 {
-                toast.show("Инвентарь полон".into());
-            }
+        let drops = mob.kind.species().drops;
+        if drops.is_empty() || transform.translation.distance(player.translation) > 8.0 {
+            continue;
+        }
+        let seed = (entity.to_bits() as u32) ^ (time.elapsed_secs() * 1000.0) as u32;
+        let mut lost = 0;
+        let mut gained = Vec::new();
+        for (i, &(item, least, most)) in drops.iter().enumerate() {
+            let count = least + (rand01(seed ^ (i as u32 * 0x77)) * (most - least + 1) as f32) as u32;
+            lost += inventory.add(item, count.min(most));
+            gained.push(format!("+{} {}", count.min(most), item.name()));
+        }
+        toast.show(gained.join(", "));
+        if lost > 0 {
+            toast.show("Инвентарь полон".into());
         }
     }
 }
@@ -397,7 +540,7 @@ fn animate(
             model.death
         } else if mob.since_attack < 0.6 {
             model.attack
-        } else if mob.flash > 0.1 && mob.kind == MobKind::Zombie {
+        } else if mob.flash > 0.1 && mob.kind.hostile() {
             model.hurt
         } else if speed > 2.6 {
             model.run

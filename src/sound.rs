@@ -48,6 +48,9 @@ pub enum Sfx {
     Hurt,
     Groan,
     Baa,
+    Oink,
+    Growl,
+    Hiss,
     ChestOpen,
     ChestClose,
     Page,
@@ -75,6 +78,9 @@ impl Sfx {
                 ["undead-1", "undead-2", "undead-3", "zombienoise2"].map(|n| format!("sounds/{n}.ogg")).into()
             }
             Sfx::Baa => vec!["sounds/sheep_baa.ogg".into()],
+            Sfx::Oink => vec!["sounds/pig_oink_1.ogg".into(), "sounds/pig_oink_2.ogg".into()],
+            Sfx::Growl => vec!["sounds/wolf_growl.ogg".into()],
+            Sfx::Hiss => vec!["sounds/spider_hiss.ogg".into()],
             Sfx::ChestOpen => vec!["sounds/doorOpen_1.ogg".into()],
             Sfx::ChestClose => vec!["sounds/doorClose_1.ogg".into()],
             Sfx::Page => vec!["sounds/bookFlip1.ogg".into()],
@@ -131,7 +137,7 @@ fn setup(mut commands: Commands, server: Res<AssetServer>, mut sources: ResMut<A
     });
 }
 
-const ALL: [Sfx; 18] = [
+const ALL: [Sfx; 21] = [
     Sfx::DigSoft,
     Sfx::DigStone,
     Sfx::DigWood,
@@ -144,6 +150,9 @@ const ALL: [Sfx; 18] = [
     Sfx::Hurt,
     Sfx::Groan,
     Sfx::Baa,
+    Sfx::Oink,
+    Sfx::Growl,
+    Sfx::Hiss,
     Sfx::ChestOpen,
     Sfx::ChestClose,
     Sfx::Page,
@@ -236,7 +245,8 @@ fn footsteps(
         *walked = 0.0;
         let under = terrain.block(((transform.translation - Vec3::Y * 0.1) / CELL).floor().as_ivec3());
         let sfx = match under.material {
-            Material::Snow => Sfx::StepSnow,
+            Material::Snow | Material::Sand | Material::Gravel => Sfx::StepSnow,
+            Material::Sandstone | Material::Ice => Sfx::StepStone,
             Material::Planks | Material::Wood => Sfx::StepWood,
             Material::Stone | Material::Bricks | Material::CoalOre | Material::IronOre | Material::DiamondOre => {
                 Sfx::StepStone
@@ -254,7 +264,7 @@ fn hurt(vitals: Res<Vitals>, mut sounds: MessageWriter<PlaySound>, mut last: Loc
     *last = vitals.health;
 }
 
-/// Zombies groan and sheep bleat now and then, about every eight seconds each.
+/// Creatures call out now and then, about every eight seconds each.
 fn creatures(
     time: Res<Time>,
     mobs: Query<(Entity, &Mob, &Transform)>,
@@ -272,6 +282,10 @@ fn creatures(
             let sfx = match mob.kind {
                 MobKind::Zombie => Sfx::Groan,
                 MobKind::Sheep => Sfx::Baa,
+                MobKind::Pig => Sfx::Oink,
+                MobKind::Wolf => Sfx::Growl,
+                MobKind::Spider => Sfx::Hiss,
+                MobKind::Cow | MobKind::Chicken => continue,
             };
             sounds.write(PlaySound::at(sfx, transform.translation + Vec3::Y));
         }

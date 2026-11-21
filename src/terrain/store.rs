@@ -72,6 +72,12 @@ pub struct MeshJob {
     edited: Vec<(IVec3, ChunkBlocks)>,
 }
 
+impl MeshJob {
+    pub fn generator(&self) -> &Generator {
+        &self.generator
+    }
+}
+
 impl VoxelStore {
     pub fn new(seed: u32) -> Self {
         Self { generator: Arc::new(Generator::new(seed)), edited: HashMap::new() }

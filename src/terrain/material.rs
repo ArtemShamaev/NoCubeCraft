@@ -49,5 +49,10 @@ pub fn albedo(material: Material) -> [f32; 3] {
         Material::Leaves => [0.066, 0.133, 0.006],
         Material::Snow => [0.742, 0.863, 0.973],
         Material::Bricks => [0.219, 0.181, 0.127],
+        Material::Sandstone => [0.32, 0.24, 0.12],
+        Material::Gravel => [0.238, 0.209, 0.131],
+        Material::Clay => [0.349, 0.190, 0.107],
+        Material::Ice => [0.25, 0.4, 0.5],
+        Material::Cactus => [0.05, 0.14, 0.02],
     }
 }

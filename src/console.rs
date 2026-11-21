@@ -1,11 +1,14 @@
 //! Cheat console: T or / opens it, Enter runs a command, Esc closes.
 
+use std::f32::consts::PI;
+
 use bevy::prelude::*;
 
 use crate::{
     AppState, Creative, Mode,
     body::Body,
     items::{Inventory, Item},
+    mobs::{MobKind, Summon},
     player::Player,
     sky::TimeOfDay,
     survival::{MAX_HEALTH, MAX_HUNGER, Vitals},
@@ -133,6 +136,7 @@ struct World<'w, 's> {
     terrain: Res<'w, Terrain>,
     player: Single<'w, 's, (&'static mut Player, &'static mut Transform, Option<&'static mut Body>)>,
     log: ResMut<'w, ConsoleLog>,
+    summons: MessageWriter<'w, Summon>,
     text: Single<'w, 's, &'static mut Text, With<LogText>>,
 }
 
@@ -148,7 +152,7 @@ fn run(In(line): In<String>, mut world: World) {
 
 const HELP: &str = "help · gamemode creative|survival · give <предмет> [кол-во] · items
 time set day|night|noon|midnight|0..1 · tp <x> <y> <z> · tp spawn
-heal · feed · kill · clear · seed";
+heal · feed · kill · clear · seed · summon <моб>";
 
 fn execute(line: &str, w: &mut World) -> String {
     let words: Vec<&str> = line.split_whitespace().collect();
@@ -209,6 +213,15 @@ fn execute(line: &str, w: &mut World) -> String {
         ["tp", x, y, z] => match (x.parse::<f32>(), y.parse::<f32>(), z.parse::<f32>()) {
             (Ok(x), Ok(y), Ok(z)) => teleport(w, Vec3::new(x, y, z)),
             _ => "tp <x> <y> <z>".into(),
+        },
+        ["summon", name] => match MobKind::named(name) {
+            Some(kind) => {
+                let (player, transform, _) = &*w.player;
+                let ahead = Quat::from_rotation_y(player.yaw) * Vec3::NEG_Z * 4.0;
+                w.summons.write(Summon { kind, at: transform.translation + ahead + Vec3::Y, yaw: player.yaw + PI });
+                format!("{kind:?}")
+            }
+            None => format!("Мобы: {}", MobKind::ALL.map(|k| format!("{k:?}").to_lowercase()).join(", ")),
         },
         ["heal"] => {
             w.vitals.health = MAX_HEALTH;

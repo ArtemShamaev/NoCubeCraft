@@ -9,9 +9,10 @@ use crate::{
     building::{self, BlockSize, BuildTool},
     containers::{ChestState, FurnaceState, OpenContainer},
     effects::Debris,
+    falling::Removed,
     hud::{Progress, Toast},
     items::{HOTBAR, Inventory, Item, PropKind, Tool, ToolKind},
-    mobs::{Mob, MobKind},
+    mobs::Mob,
     player::{self, Player, PlayerCamera},
     props::{self, Crop, Prop, PropAssets},
     sky::TimeOfDay,
@@ -39,6 +40,9 @@ impl Plugin for InteractionPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<BuildTool>()
             .add_systems(OnEnter(AppState::Game), spawn_ghost)
+            .add_systems(Startup, |mut gizmos: ResMut<GizmoConfigStore>| {
+                gizmos.config_mut::<DefaultGizmoConfigGroup>().0.line.width = 1.0;
+            })
             .add_systems(
                 Update,
                 (select_slot, switch_tool, aim, (primary, secondary), show_target)
@@ -136,7 +140,9 @@ fn dig_seconds(material: Material) -> f32 {
     match material {
         Material::Air => 0.0,
         Material::Leaves => 0.004,
-        Material::Grass | Material::Dirt | Material::Sand | Material::Snow => 0.012,
+        Material::Grass | Material::Dirt | Material::Sand | Material::Snow | Material::Gravel | Material::Clay => 0.012,
+        Material::Cactus => 0.02,
+        Material::Ice | Material::Sandstone => 0.06,
         Material::Wood | Material::Planks => 0.04,
         Material::Stone | Material::Bricks | Material::CoalOre | Material::IronOre => 0.12,
         Material::DiamondOre => 0.2,
@@ -145,10 +151,14 @@ fn dig_seconds(material: Material) -> f32 {
 
 fn tool_for(material: Material) -> ToolKind {
     match material {
-        Material::Stone | Material::Bricks | Material::CoalOre | Material::IronOre | Material::DiamondOre => {
-            ToolKind::Pickaxe
-        }
-        Material::Wood | Material::Planks | Material::Leaves => ToolKind::Axe,
+        Material::Stone
+        | Material::Bricks
+        | Material::CoalOre
+        | Material::IronOre
+        | Material::DiamondOre
+        | Material::Sandstone
+        | Material::Ice => ToolKind::Pickaxe,
+        Material::Wood | Material::Planks | Material::Leaves | Material::Cactus => ToolKind::Axe,
         _ => ToolKind::Shovel,
     }
 }
@@ -181,12 +191,15 @@ fn dig_region(terrain: &Terrain, cell: IVec3, size: BlockSize) -> Vec<(IVec3, Bl
 struct Feedback<'w> {
     debris: MessageWriter<'w, Debris>,
     sounds: MessageWriter<'w, PlaySound>,
+    removed: MessageWriter<'w, Removed>,
 }
 
 impl Feedback<'_> {
     /// Dug-out blocks: a burst of their most common material and its sound.
-    fn dug(&mut self, region: &[(IVec3, Block)], size: BlockSize) {
+    fn dug(&mut self, region: &[(IVec3, Block)], size: BlockSize, from: Vec3) {
         let Some((_, first)) = region.first() else { return };
+        // Whatever this held up may now fall.
+        self.removed.write(Removed { cells: region.iter().map(|(c, _)| *c).collect(), from });
         let material = region
             .iter()
             .map(|(_, b)| b.material)
@@ -309,7 +322,7 @@ fn primary(
                 }
                 work.repeat = REPEAT_SECS;
                 terrain.set_blocks(region.iter().map(|(c, _)| (*c, Block::AIR)));
-                feedback.dug(&region, size);
+                feedback.dug(&region, size, player.translation);
                 return;
             }
             let seconds: f32 = region.iter().map(|(_, b)| dig_seconds(b.material) / tool_speed(tool, b.material)).sum();
@@ -320,7 +333,7 @@ fn primary(
             }
             *work = Work::default();
             progress.0 = None;
-            feedback.dug(&region, size);
+            feedback.dug(&region, size, player.translation);
             dig(&mut terrain, &mut inventory, &mut toast, &region, tool);
         }
     }
@@ -473,7 +486,7 @@ fn secondary(
                         toast.show("Точка возрождения сохранена. Спать можно только ночью".into());
                     } else if mobs
                         .iter()
-                        .any(|(m, t)| m.kind == MobKind::Zombie && t.translation.distance(feet) < SLEEP_SAFE_RADIUS)
+                        .any(|(m, t)| m.kind.hostile() && t.translation.distance(feet) < SLEEP_SAFE_RADIUS)
                     {
                         toast.show("Рядом зомби, уснуть не получится".into());
                     } else {
@@ -563,7 +576,7 @@ fn spawn_ghost(mut commands: Commands, mut materials: ResMut<Assets<StandardMate
         Ghost,
         DespawnOnExit(AppState::Game),
         MeshMaterial3d(materials.add(StandardMaterial {
-            base_color: Color::srgba(0.85, 0.92, 1.0, 0.28),
+            base_color: Color::srgba(0.85, 0.92, 1.0, 0.14),
             alpha_mode: AlphaMode::Blend,
             unlit: true,
             cull_mode: None,
@@ -604,7 +617,8 @@ fn show_target(
             let size = Vec3::splat(n as f32 * CELL + 0.01);
             let center = origin.as_vec3() * CELL + size / 2.0 - 0.005;
             let k = progress.0.unwrap_or(0.0).clamp(0.0, 1.0);
-            let color = Color::srgba(1.0, 1.0 - 0.6 * k, 1.0 - 0.8 * k, 0.6);
+            // A faint dark outline that warms up while digging, so it never hides the block.
+            let color = Color::srgba(0.05 + 0.6 * k, 0.05 + 0.2 * k, 0.05, 0.22 + 0.4 * k);
             gizmos.cube(Transform::from_translation(center).with_scale(size), color);
         }
         Target::Entity { .. } | Target::Nothing => {}

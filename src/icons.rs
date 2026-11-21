@@ -76,6 +76,32 @@ fn paint(c: &mut Canvas, item: Item) {
             }
         }
         Item::Snow => c.lump([0.94, 0.96, 1.0], 0.05),
+        Item::Sandstone => {
+            c.shape(|p| rounded_box(p, Vec2::splat(0.5), Vec2::splat(0.34), 0.04), [0.85, 0.72, 0.48]);
+            for y in [0.4, 0.6] {
+                c.shape(|p| segment(p, Vec2::new(0.18, y), Vec2::new(0.82, y)) - 0.01, [0.7, 0.56, 0.36]);
+            }
+        }
+        Item::Gravel => {
+            c.lump([0.55, 0.52, 0.47], 0.35);
+            c.speckle([0.35, 0.33, 0.3], 0.7);
+        }
+        Item::Clay => c.lump([0.72, 0.5, 0.36], 0.08),
+        Item::Ice => c.shape(|p| rounded_box(p, Vec2::splat(0.5), Vec2::splat(0.32), 0.06), [0.7, 0.88, 0.95]),
+        Item::Cactus => {
+            c.shape(|p| rounded_box(p, Vec2::new(0.5, 0.55), Vec2::new(0.14, 0.32), 0.1), [0.25, 0.55, 0.2]);
+            c.shape(|p| rounded_box(p, Vec2::new(0.3, 0.45), Vec2::new(0.06, 0.12), 0.05), [0.25, 0.55, 0.2]);
+        }
+        Item::Beef | Item::Porkchop | Item::Chicken | Item::CookedBeef | Item::CookedPorkchop | Item::CookedChicken => {
+            let meat = match item {
+                Item::Beef => [0.75, 0.2, 0.2],
+                Item::Porkchop => [0.95, 0.6, 0.6],
+                Item::Chicken => [0.95, 0.8, 0.7],
+                _ => [0.55, 0.3, 0.15],
+            };
+            c.shape(|p| ((p - Vec2::new(0.5, 0.52)) / Vec2::new(0.34, 0.24)).length() - 1.0, meat);
+            c.shape(|p| ((p - Vec2::new(0.6, 0.48)) / Vec2::new(0.1, 0.07)).length() - 1.0, [0.95, 0.9, 0.85]);
+        }
         Item::Leaves => {
             c.lump([0.24, 0.45, 0.15], 0.3);
             c.speckle([0.16, 0.32, 0.1], 0.6);

@@ -28,7 +28,7 @@ macro_rules! layer {
 }
 
 /// Colour, normal and roughness/occlusion files per layer, in layer order.
-const FILES: [[&[u8]; 3]; 9] = [
+const FILES: [[&[u8]; 3]; 14] = [
     layer!("grass"),
     layer!("dirt"),
     layer!("stone"),
@@ -38,10 +38,19 @@ const FILES: [[&[u8]; 3]; 9] = [
     layer!("leaves"),
     layer!("snow"),
     layer!("bricks"),
+    layer!("sandstone"),
+    layer!("gravel"),
+    layer!("clay"),
+    layer!("ice"),
+    layer!("cactus"),
 ];
 
 /// Grass shows this layer on its sides, like a cut through the turf.
 pub const DIRT_LAYER: u32 = 1;
+pub const GRASS_LAYER: u32 = 0;
+pub const LEAVES_LAYER: u32 = 6;
+/// Grey layered rock, tinted to sandstone.
+pub const SANDSTONE_LAYER: u32 = 9;
 
 /// The texture array layer a material is drawn with.
 pub fn layer(material: Material) -> u32 {
@@ -55,6 +64,11 @@ pub fn layer(material: Material) -> u32 {
         Material::Leaves => 6,
         Material::Snow => 7,
         Material::Bricks => 8,
+        Material::Sandstone => SANDSTONE_LAYER,
+        Material::Gravel => 10,
+        Material::Clay => 11,
+        Material::Ice => 12,
+        Material::Cactus => 13,
     }
 }
 

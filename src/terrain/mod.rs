@@ -20,7 +20,8 @@ use bevy::{
 
 pub use blocks::{Block, CELL, Material, Shape};
 use generator::TREE_HEIGHT;
-use material::TerrainMaterial;
+pub use generator::{Biome, TREE_REACH};
+pub use material::TerrainMaterial;
 pub use material::albedo;
 pub use store::EditsSnapshot;
 use store::{ChunkBlocks, ChunkKey, MeshJob, VoxelStore, block_in, chunk_of};
@@ -89,7 +90,7 @@ pub struct TerrainAnchor;
 
 #[derive(Resource)]
 pub struct TerrainAssets {
-    material: Handle<TerrainMaterial>,
+    pub material: Handle<TerrainMaterial>,
     water: Handle<water::WaterMaterial>,
 }
 
@@ -168,6 +169,11 @@ impl Terrain {
 
     pub fn surface_height(&self, x: f32, z: f32) -> f32 {
         self.store.generator().height(x, z)
+    }
+
+    pub fn biome(&self, x: f32, z: f32) -> Biome {
+        let generator = self.store.generator();
+        generator.biome(x, z, generator.height(x, z))
     }
 
     pub fn is_water(&self, p: Vec3) -> bool {
@@ -405,6 +411,35 @@ impl Terrain {
     }
 }
 
+/// A mesh of loose blocks (cells relative to the mesh origin, at most a chunk across),
+/// and its vertex positions for building a collider. `None` if nothing is visible.
+pub fn mesh_blocks(cells: &[(IVec3, Block)]) -> Option<(Mesh, Vec<Vec3>)> {
+    let n = mesher::SAMPLES;
+    let mut grid = vec![Block::AIR; (n * n * n) as usize];
+    for (cell, block) in cells {
+        let s = *cell + IVec3::ONE;
+        if s.cmplt(IVec3::ONE).any() || s.cmpge(IVec3::splat(n - 1)).any() {
+            return None;
+        }
+        grid[(s.x + n * (s.y + n * s.z)) as usize] = *block;
+    }
+    let data = mesher::mesh(&grid, CELL);
+    if data.is_empty() {
+        return None;
+    }
+    let points = data.positions.iter().map(|p| Vec3::from(*p)).collect();
+    let mut mesh = Mesh::new(PrimitiveTopology::TriangleList, RenderAssetUsages::RENDER_WORLD);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_POSITION, data.positions);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_NORMAL, data.smooth);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_COLOR, data.colors);
+    mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, data.ore);
+    mesh.insert_indices(Indices::U32(data.indices));
+    Some((mesh, points))
+}
+
+/// Largest loose piece that can come apart, in cells per axis.
+pub const MAX_PIECE: i32 = blocks::CHUNK_CELLS - 2;
+
 fn spawn_build(job: MeshJob) -> Task<Built> {
     AsyncComputeTaskPool::get().spawn(async move { build(&job) })
 }
@@ -417,6 +452,7 @@ fn build(job: &MeshJob) -> Built {
         data = data.simplified(job.key.size(), job.key.cell() * error);
     }
     let blocks = (job.key.level == 0).then(|| MeshJob::interior(&samples));
+    tint_foliage(&mut data, job);
     if data.is_empty() {
         return Built { mesh: None, triangles: 0, collider: None, blocks };
     }
@@ -436,6 +472,35 @@ fn build(job: &MeshJob) -> Built {
     mesh.insert_attribute(Mesh::ATTRIBUTE_UV_0, data.ore);
     mesh.insert_indices(Indices::U32(data.indices));
     Built { mesh: Some(mesh), triangles, collider, blocks }
+}
+
+/// Grass and leaves take their biome's colour, sampled on a coarse grid and interpolated.
+fn tint_foliage(data: &mut mesher::ChunkMesh, job: &MeshJob) {
+    const GRID: usize = 8;
+    let size = job.key.size();
+    let origin = job.key.origin();
+    let step = size / GRID as f32;
+    let tints: Vec<Vec3> = (0..(GRID + 1) * (GRID + 1))
+        .map(|i| {
+            let (x, z) = ((i % (GRID + 1)) as f32, (i / (GRID + 1)) as f32);
+            Vec3::from(job.generator().foliage_tint(origin.x + x * step, origin.z + z * step))
+        })
+        .collect();
+    let at = |x: usize, z: usize| tints[x.min(GRID) + z.min(GRID) * (GRID + 1)];
+    for (i, color) in data.colors.iter_mut().enumerate() {
+        let layer = data.ore[i][0] as u32;
+        if layer != textures::GRASS_LAYER && layer != textures::LEAVES_LAYER {
+            continue;
+        }
+        let p = data.positions[i];
+        let g = Vec2::new(p[0], p[2]).clamp(Vec2::ZERO, Vec2::splat(size)) / step;
+        let (x, z) = (g.x.floor() as usize, g.y.floor() as usize);
+        let f = g - g.floor();
+        let top = at(x, z).lerp(at(x + 1, z), f.x);
+        let bottom = at(x, z + 1).lerp(at(x + 1, z + 1), f.x);
+        let tint = top.lerp(bottom, f.y);
+        color[..3].copy_from_slice(&tint.to_array());
+    }
 }
 
 fn select_chunks(

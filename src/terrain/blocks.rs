@@ -30,10 +30,15 @@ pub enum Material {
     Snow,
     Bricks,
     DiamondOre,
+    Sandstone,
+    Gravel,
+    Clay,
+    Ice,
+    Cactus,
 }
 
 impl Material {
-    pub const ALL: [Material; 13] = [
+    pub const ALL: [Material; 18] = [
         Material::Air,
         Material::Grass,
         Material::Dirt,
@@ -47,6 +52,11 @@ impl Material {
         Material::Snow,
         Material::Bricks,
         Material::DiamondOre,
+        Material::Sandstone,
+        Material::Gravel,
+        Material::Clay,
+        Material::Ice,
+        Material::Cactus,
     ];
 
     pub fn from_u8(value: u8) -> Option<Material> {

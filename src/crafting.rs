@@ -46,7 +46,7 @@ const STONE_TOOLS: [Recipe; 4] = tools!(Stone, StonePickaxe, StoneAxe, StoneShov
 const IRON_TOOLS: [Recipe; 4] = tools!(IronIngot, IronPickaxe, IronAxe, IronShovel, IronSword);
 const DIAMOND_TOOLS: [Recipe; 4] = tools!(Diamond, DiamondPickaxe, DiamondAxe, DiamondShovel, DiamondSword);
 
-const BASICS: [Recipe; 11] = [
+const BASICS: [Recipe; 12] = [
     shapeless(Planks, 4, &[Wood]),
     shaped(Stick, 4, &["P", "P"], &[P]),
     shaped(CraftingTable, 1, &["PP", "PP"], &[P]),
@@ -58,6 +58,7 @@ const BASICS: [Recipe; 11] = [
     shaped(Bread, 1, &["WWW"], &[('W', Wheat)]),
     shaped(Bricks, 4, &["SS", "SS"], &[('S', Stone)]),
     shapeless(Seeds, 1, &[Wheat]),
+    shaped(Sandstone, 4, &["SS", "SS"], &[('S', Sand)]),
 ];
 
 /// Every crafting recipe, in recipe-book order.
@@ -169,6 +170,9 @@ pub fn smelt(item: Item) -> Option<Item> {
     match item {
         IronOre => Some(IronIngot),
         Mutton => Some(CookedMutton),
+        Beef => Some(CookedBeef),
+        Porkchop => Some(CookedPorkchop),
+        Chicken => Some(CookedChicken),
         Wood => Some(Charcoal),
         _ => None,
     }

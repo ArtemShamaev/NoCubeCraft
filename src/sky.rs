@@ -39,6 +39,8 @@ const FOG_START: f32 = 0.4;
 const FOG_END: f32 = 0.92;
 const WATER_FOG: Srgba = Srgba::rgb(0.05, 0.2, 0.26);
 const WATER_FOG_END: f32 = 24.0;
+const CAVE_FOG: Srgba = Srgba::rgb(0.02, 0.02, 0.025);
+const CAVE_FOG_END: f32 = 45.0;
 
 pub struct SkyPlugin;
 
@@ -171,7 +173,10 @@ fn advance(
         (-sun_dir, MOON_LUX * smoothstep(0.0, 0.2, -elevation), Srgba::rgb(0.62, 0.7, 1.0))
     };
     *transform = Transform::default().looking_to(-light_dir, Vec3::Y);
-    light.illuminance = lux;
+    // Deep underground the sky's light doesn't reach; only torches help there.
+    let eye = fog.iter().next().map(|(_, g)| g.translation());
+    let under = eye.map_or(0.0, |e| smoothstep(3.0, 10.0, terrain.surface_height(e.x, e.z) - e.y));
+    light.illuminance = lux * (1.0 - under);
     light.color = color.into();
 
     clear.0 = sky.into();
@@ -187,13 +192,18 @@ fn advance(
         };
     }
     ambient.color = Srgba::rgb(0.75, 0.82, 1.0).mix(&Srgba::WHITE, day).into();
-    ambient.brightness = NIGHT_AMBIENT + (DAY_AMBIENT - NIGHT_AMBIENT) * day;
+    ambient.brightness = (NIGHT_AMBIENT + (DAY_AMBIENT - NIGHT_AMBIENT) * day) * (1.0 - 0.8 * under);
 
     for (mut fog, camera) in &mut fog {
         if terrain.is_water(camera.translation()) {
             fog.color = WATER_FOG.mix(&NIGHT_SKY, 1.0 - day).into();
             fog.directional_light_color = Color::NONE;
             fog.falloff = FogFalloff::Linear { start: 0.0, end: WATER_FOG_END };
+        } else if under > 0.0 {
+            fog.color = sky.mix(&CAVE_FOG, under).into();
+            fog.directional_light_color = Color::NONE;
+            let end = view.0 * FOG_END * (1.0 - under) + CAVE_FOG_END * under;
+            fog.falloff = FogFalloff::Linear { start: end * 0.3, end };
         } else {
             fog.color = sky.into();
             fog.directional_light_color = sunlight.with_alpha(0.4 * day).into();

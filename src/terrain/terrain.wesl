@@ -119,7 +119,7 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
     let tint = hash(id);
     let patches = noise(p * 0.11);
     let ao = mix(in.color.a, 1.0, far * 0.85);
-    var color = albedo * ao * (0.86 + 0.24 * patches) * mix(1.0, 0.93 + 0.14 * tint, near);
+    var color = albedo * in.color.rgb * ao * (0.86 + 0.24 * patches) * mix(1.0, 0.93 + 0.14 * tint, near);
 
     if code > 0.5 {
         let fleck = step(0.6, noise(p * 6.0));

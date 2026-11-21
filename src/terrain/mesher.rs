@@ -19,6 +19,11 @@ const SKIRT_DEPTH: i32 = 3;
 /// Brightness for 0..=3 open neighbours around a vertex.
 const AO_CURVE: [f32; 4] = [0.5, 0.68, 0.84, 1.0];
 
+/// Vertex colour multiplying the texture: sandstone reuses grey layered rock, warmed up.
+fn base_tint(material: Material) -> [f32; 3] {
+    if material == Material::Sandstone { [1.6, 1.2, 0.75] } else { [1.0; 3] }
+}
+
 #[derive(Default)]
 pub struct ChunkMesh {
     /// Relative to the chunk origin, in metres.
@@ -229,7 +234,7 @@ fn greedy_cubes(grid: &Grid, side: usize, cell: f32, out: &mut ChunkMesh) {
 fn emit_quad(grid: &Grid, out: &mut ChunkMesh, corners: [IVec3; 4], cell: f32, normal: Vec3, key: &FaceKey) {
     let base = out.positions.len() as u32;
     let (material, ao) = (key.material, key.ao);
-    let color = [1.0; 3];
+    let color = base_tint(material);
     // Skirts are flagged so the shader lights them like the ground.
     let ore = if key.skirt { [layer(material) as f32, -1.0] } else { ore_weights(material) };
     for (p, a) in corners.iter().zip(ao) {
@@ -267,7 +272,7 @@ fn shaped_cells(grid: &Grid, cell: f32, out: &mut ChunkMesh) {
                 if block.is_air() || block.shape == Shape::CUBE {
                     continue;
                 }
-                let color = [1.0; 3];
+                let color = base_tint(block.material);
                 let ore = ore_weights(block.material);
                 let origin = (c - IVec3::ONE).as_vec3();
                 for polygon in &block.shape.geometry().polygons {

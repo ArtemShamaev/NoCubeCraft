@@ -18,10 +18,14 @@ const PINE_HEIGHT: f32 = 50.0;
 /// Slopes steeper than this (rise per metre) are bare rock.
 const CLIFF_SLOPE: f32 = 1.3;
 const TOPSOIL_DEPTH: f32 = 3.0;
-/// Caves fade out towards the surface so the ground isn't riddled with holes.
+/// Caves fade out towards the surface so the ground isn't riddled with holes,
+/// except at entrances, where tunnels break through to daylight.
 const CAVE_MIN_DEPTH: f32 = 4.0;
 const CAVE_FULL_DEPTH: f32 = 16.0;
-const CAVE_RADIUS: f32 = 0.07;
+const CAVE_RADIUS: f32 = 0.085;
+/// Big caverns ("cheese caves") open up this deep.
+const CAVERN_MIN_DEPTH: f32 = 10.0;
+const CAVERN_THRESHOLD: f32 = 0.56;
 /// Iron only appears below this height, diamonds far deeper.
 const IRON_MAX_Y: f32 = 10.0;
 const DIAMOND_MAX_Y: f32 = -8.0;
@@ -37,10 +41,33 @@ pub struct Generator {
     mountains: RidgedMulti<Perlin>,
     cave_a: Perlin,
     cave_b: Perlin,
+    cavern: Perlin,
+    entrances: Perlin,
     coal: Perlin,
     iron: Perlin,
     forest: Fbm<Perlin>,
     snow: Perlin,
+    temperature: Fbm<Perlin>,
+    humidity: Fbm<Perlin>,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum Biome {
+    Plains,
+    Forest,
+    Taiga,
+    Snowy,
+    Desert,
+    Savanna,
+    Swamp,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum TreeKind {
+    Broadleaf,
+    Pine,
+    Acacia,
+    Cactus,
 }
 
 impl Generator {
@@ -51,10 +78,14 @@ impl Generator {
             mountains: RidgedMulti::new(seed.wrapping_add(2)).set_octaves(5).set_frequency(1.0 / 400.0),
             cave_a: Perlin::new(seed.wrapping_add(3)),
             cave_b: Perlin::new(seed.wrapping_add(4)),
+            cavern: Perlin::new(seed.wrapping_add(9)),
+            entrances: Perlin::new(seed.wrapping_add(10)),
             coal: Perlin::new(seed.wrapping_add(5)),
             iron: Perlin::new(seed.wrapping_add(6)),
             forest: Fbm::new(seed.wrapping_add(7)).set_octaves(3).set_frequency(1.0 / 220.0),
             snow: Perlin::new(seed.wrapping_add(8)),
+            temperature: Fbm::new(seed.wrapping_add(11)).set_octaves(3).set_frequency(1.0 / 900.0),
+            humidity: Fbm::new(seed.wrapping_add(12)).set_octaves(3).set_frequency(1.0 / 700.0),
         }
     }
 
@@ -81,6 +112,47 @@ impl Generator {
         }
         let slack = 2.0 + size / 8.0;
         (lo - slack, hi + slack)
+    }
+
+    /// Temperature and humidity, about -1..1; high ground is colder.
+    fn climate(&self, x: f32, z: f32, height: f32) -> (f32, f32) {
+        let p = [x as f64, z as f64];
+        let t = self.temperature.get(p) as f32 * 1.6 - ((height - 40.0) / 90.0).max(0.0);
+        (t, self.humidity.get(p) as f32 * 1.6)
+    }
+
+    pub fn biome(&self, x: f32, z: f32, height: f32) -> Biome {
+        let (t, h) = self.climate(x, z, height);
+        if t < -0.4 {
+            Biome::Snowy
+        } else if t < -0.12 {
+            Biome::Taiga
+        } else if t > 0.35 {
+            if h < -0.05 { Biome::Desert } else { Biome::Savanna }
+        } else if h > 0.3 && height < 26.0 {
+            Biome::Swamp
+        } else if h > -0.05 {
+            Biome::Forest
+        } else {
+            Biome::Plains
+        }
+    }
+
+    /// Colour for grass and leaves: lush, dry, cold or swampy, blended smoothly.
+    pub fn foliage_tint(&self, x: f32, z: f32) -> [f32; 3] {
+        let (t, h) = self.climate(x, z, self.height(x, z));
+        let ramp = |a: f32, b: f32, v: f32| {
+            let k = ((v - a) / (b - a)).clamp(0.0, 1.0);
+            k * k * (3.0 - 2.0 * k)
+        };
+        let lush = Vec3::new(1.0, 1.0, 1.0);
+        let dry = Vec3::new(1.45, 1.1, 0.55);
+        let cold = Vec3::new(0.75, 0.92, 0.9);
+        let swamp = Vec3::new(0.55, 0.62, 0.32);
+        let mut c = lush.lerp(dry, ramp(0.15, 0.45, t));
+        c = c.lerp(cold, ramp(-0.05, -0.4, t));
+        c = c.lerp(swamp, ramp(0.2, 0.35, h) * ramp(0.35, 0.15, t.abs()));
+        c.to_array()
     }
 
     /// Chance of a tree in each tree cell: dense woods with meadows in between.
@@ -115,7 +187,7 @@ impl Generator {
                     if y0 + cell < column.height - 0.3 {
                         block.material = if depth < TOPSOIL_DEPTH { column.subsoil } else { Material::Stone };
                     }
-                    if detail && depth > CAVE_MIN_DEPTH && lattice.cave(self, center, depth) {
+                    if detail && depth > column.cave_top && lattice.cave(self, center, depth, column.cave_top) {
                         continue;
                     }
                     if detail && block.material == Material::Stone {
@@ -134,10 +206,20 @@ impl Generator {
         let h = hash2(id);
         let x = (id.x * TREE_CELL) as f32 + (h % 1000) as f32 / 1000.0 * TREE_CELL as f32;
         let z = (id.y * TREE_CELL) as f32 + ((h >> 10) % 1000) as f32 / 1000.0 * TREE_CELL as f32;
-        if (h >> 20) as f32 / 4096.0 > self.forest(x, z) {
+        let ground = self.height(x, z);
+        let (density, kind) = match self.biome(x, z, ground) {
+            Biome::Forest => (1.0, TreeKind::Broadleaf),
+            Biome::Plains => (0.1, TreeKind::Broadleaf),
+            Biome::Swamp => (0.55, TreeKind::Broadleaf),
+            Biome::Taiga => (0.9, TreeKind::Pine),
+            Biome::Snowy => (0.15, TreeKind::Pine),
+            Biome::Savanna => (0.12, TreeKind::Acacia),
+            Biome::Desert => (0.06, TreeKind::Cactus),
+        };
+        let chance = if kind == TreeKind::Cactus { density } else { self.forest(x, z) * density };
+        if (h >> 20) as f32 / 4096.0 > chance {
             return None;
         }
-        let ground = self.height(x, z);
         if !(BEACH_HEIGHT + 0.5..SNOW_HEIGHT - 8.0).contains(&ground) {
             return None;
         }
@@ -149,7 +231,8 @@ impl Generator {
         }
         let h2 = hash2(id + IVec2::new(7919, 104_729));
         let scale = 0.8 + (h2 % 1000) as f32 / 1000.0 * 0.5;
-        Some(Tree { base: Vec3::new(x, ground, z), scale, pine: ground > PINE_HEIGHT, seed: h2 })
+        let kind = if kind == TreeKind::Broadleaf && ground > PINE_HEIGHT { TreeKind::Pine } else { kind };
+        Some(Tree { base: Vec3::new(x, ground, z), scale, kind, seed: h2 })
     }
 
     fn plant_trees(&self, out: &mut [Block], min: Vec3, cell: f32, n: usize) {
@@ -184,6 +267,8 @@ struct Column {
     height: f32,
     surface: Material,
     subsoil: Material,
+    /// Depth below which tunnels may run: shallow at cave entrances.
+    cave_top: f32,
 }
 
 impl Columns {
@@ -205,16 +290,40 @@ impl Columns {
                 let wx = min.x + (x as f32 - 0.5) * cell;
                 let wz = min.z + (z as f32 - 0.5) * cell;
                 let snow_line = SNOW_HEIGHT + generator.snow.get([wx as f64 / 30.0, wz as f64 / 30.0]) as f32 * 8.0;
-                let (surface, subsoil) = if height < BEACH_HEIGHT {
+                let biome = generator.biome(wx, wz, height);
+                let snow_line = match biome {
+                    Biome::Snowy => f32::MIN,
+                    Biome::Taiga => snow_line - 30.0,
+                    _ => snow_line,
+                };
+                let bed = generator.snow.get([wx as f64 / 9.0, wz as f64 / 9.0]) as f32;
+                let (surface, subsoil) = if height < SEA_LEVEL - 1.0 {
+                    // Lake and sea floors: sand, with patches of clay and gravel.
+                    let floor = if bed > 0.35 {
+                        Material::Clay
+                    } else if bed < -0.4 {
+                        Material::Gravel
+                    } else {
+                        Material::Sand
+                    };
+                    (floor, floor)
+                } else if biome == Biome::Desert {
+                    (Material::Sand, Material::Sandstone)
+                } else if height < BEACH_HEIGHT {
                     (Material::Sand, Material::Sand)
                 } else if slope > CLIFF_SLOPE {
                     (Material::Stone, Material::Stone)
                 } else if height > snow_line {
-                    (Material::Snow, Material::Stone)
+                    (Material::Snow, if height > SNOW_HEIGHT + 10.0 { Material::Ice } else { Material::Stone })
+                } else if biome == Biome::Swamp {
+                    (Material::Grass, Material::Clay)
                 } else {
                     (Material::Grass, Material::Dirt)
                 };
-                Column { height, surface, subsoil }
+                let entrance = generator.entrances.get([wx as f64 / 70.0, wz as f64 / 70.0]) as f32;
+                let open = ((entrance - 0.38) / 0.12).clamp(0.0, 1.0);
+                let cave_top = CAVE_MIN_DEPTH + (0.2 - CAVE_MIN_DEPTH) * open;
+                Column { height, surface, subsoil, cave_top }
             })
             .collect();
         // Each corner is shared by four columns; averaging them keeps neighbours in agreement.
@@ -281,7 +390,7 @@ impl Columns {
 struct Lattice {
     origin: IVec3,
     size: i32,
-    values: Vec<[f32; 4]>,
+    values: Vec<[f32; 5]>,
 }
 
 const UNSET: f32 = f32::NAN;
@@ -289,11 +398,11 @@ const UNSET: f32 = f32::NAN;
 impl Lattice {
     fn new(origin: IVec3, extent: f32) -> Self {
         let size = extent.ceil() as i32 + 3;
-        Self { origin, size, values: vec![[UNSET; 4]; (size * size * size) as usize] }
+        Self { origin, size, values: vec![[UNSET; 5]; (size * size * size) as usize] }
     }
 
-    /// Cave A, cave B, coal, iron at a lattice point.
-    fn get(&mut self, generator: &Generator, p: IVec3) -> [f32; 4] {
+    /// Cave A, cave B, coal, iron and cavern noise at a lattice point.
+    fn get(&mut self, generator: &Generator, p: IVec3) -> [f32; 5] {
         let l = p - self.origin;
         let inside = l.cmpge(IVec3::ZERO).all() && l.cmplt(IVec3::splat(self.size)).all();
         let compute = || {
@@ -304,6 +413,7 @@ impl Lattice {
                 generator.cave_b.get(q) as f32,
                 generator.coal.get(o) as f32,
                 generator.iron.get(o) as f32,
+                generator.cavern.get([p.x as f64 / 34.0, p.y as f64 / 18.0, p.z as f64 / 34.0]) as f32,
             ]
         };
         if !inside {
@@ -316,11 +426,12 @@ impl Lattice {
         self.values[i]
     }
 
-    /// Tunnels follow the intersection of two noise iso-surfaces ("spaghetti caves").
-    fn cave(&mut self, generator: &Generator, p: Vec3, depth: f32) -> bool {
+    /// Tunnels follow the intersection of two noise iso-surfaces ("spaghetti caves"); deeper
+    /// down, a third noise hollows out big caverns. `top` is how deep tunnels start here.
+    fn cave(&mut self, generator: &Generator, p: Vec3, depth: f32, top: f32) -> bool {
         let base = p.floor().as_ivec3();
         let t = p - base.as_vec3();
-        let (mut a, mut b) = (0.0, 0.0);
+        let (mut a, mut b, mut c) = (0.0, 0.0, 0.0);
         for corner in 0..8 {
             let o = IVec3::new(corner & 1, (corner >> 1) & 1, corner >> 2);
             let w = (if o.x == 1 { t.x } else { 1.0 - t.x })
@@ -329,9 +440,14 @@ impl Lattice {
             let v = self.get(generator, base + o);
             a += v[0] * w;
             b += v[1] * w;
+            c += v[4] * w;
         }
-        let fade = ((depth - CAVE_MIN_DEPTH) / (CAVE_FULL_DEPTH - CAVE_MIN_DEPTH)).clamp(0.0, 1.0);
-        a.abs().max(b.abs()) < CAVE_RADIUS * fade * fade * (3.0 - 2.0 * fade)
+        let deep = ((depth - CAVERN_MIN_DEPTH) / 8.0).clamp(0.0, 1.0);
+        if deep > 0.0 && c > CAVERN_THRESHOLD + 0.2 * (1.0 - deep) {
+            return true;
+        }
+        let fade = ((depth - top) / (CAVE_FULL_DEPTH - top)).clamp(0.0, 1.0);
+        a.abs().max(b.abs()) < CAVE_RADIUS * fade.sqrt()
     }
 
     /// Ore comes in whole cubic metres.
@@ -343,6 +459,8 @@ impl Lattice {
             Material::IronOre
         } else if v[2] > 0.5 {
             Material::CoalOre
+        } else if v[2] < -0.62 {
+            Material::Gravel
         } else {
             Material::Stone
         }
@@ -352,14 +470,20 @@ impl Lattice {
 struct Tree {
     base: Vec3,
     scale: f32,
-    pine: bool,
+    kind: TreeKind,
     seed: u32,
 }
 
 impl Tree {
     fn rasterize(&self, out: &mut [Block], min: Vec3, cell: f32, n: usize) {
         let s = self.scale;
-        let (trunk_height, trunk_radius) = if self.pine { (7.0 * s, 0.26 * s) } else { (4.2 * s, 0.32 * s) };
+        let (trunk_height, trunk_radius) = match self.kind {
+            TreeKind::Pine => (7.0 * s, 0.26 * s),
+            TreeKind::Broadleaf => (4.2 * s, 0.32 * s),
+            TreeKind::Acacia => (3.6 * s, 0.24 * s),
+            TreeKind::Cactus => (1.4 + s * 1.2, 0.26),
+        };
+        let trunk = if self.kind == TreeKind::Cactus { Material::Cactus } else { Material::Wood };
         let reach = Vec3::new(TREE_REACH, TREE_HEIGHT, TREE_REACH);
         let lo = ((self.base - Vec3::new(reach.x, 1.0, reach.z) - min) / cell).floor().as_ivec3().max(IVec3::ZERO);
         let hi = ((self.base + reach - min) / cell).ceil().as_ivec3().min(IVec3::splat(n as i32 - 1));
@@ -372,7 +496,7 @@ impl Tree {
                     let up = p.y - self.base.y;
                     let radial = Vec3::new(p.x - self.base.x, 0.0, p.z - self.base.z).length();
                     if radial < trunk_radius.max(cell * 0.5) && (-0.8..trunk_height).contains(&up) {
-                        out[i] = Block::solid(Material::Wood);
+                        out[i] = Block::solid(trunk);
                     } else if out[i].is_air() && self.leaf(p, crown) {
                         out[i] = Block::solid(Material::Leaves);
                     }
@@ -384,7 +508,16 @@ impl Tree {
     fn leaf(&self, p: Vec3, crown: Vec3) -> bool {
         let s = self.scale;
         let lump = value_noise(p * 1.3, self.seed) - 0.5;
-        if self.pine {
+        match self.kind {
+            TreeKind::Cactus => return false,
+            // A wide flat canopy.
+            TreeKind::Acacia => {
+                let d = (p - crown) / (Vec3::new(3.0, 0.75, 3.0) * s);
+                return d.length_squared() < 1.0 + lump * 0.7;
+            }
+            _ => {}
+        }
+        if self.kind == TreeKind::Pine {
             // A cone of drooping tiers.
             let t = (p.y - (self.base.y + 1.6 * s)) / (7.6 * s);
             if !(0.0..1.0).contains(&t) {

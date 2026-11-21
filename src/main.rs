@@ -4,6 +4,7 @@ mod console;
 mod containers;
 mod crafting;
 mod effects;
+mod falling;
 mod hands;
 mod hud;
 mod icons;
@@ -106,6 +107,7 @@ fn main() {
             console::ConsolePlugin,
             containers::ContainersPlugin,
             effects::EffectsPlugin,
+            falling::FallingPlugin,
             hands::HandsPlugin,
             sound::SoundPlugin,
         ))

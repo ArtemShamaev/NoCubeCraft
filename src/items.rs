@@ -46,6 +46,17 @@ pub enum Item {
     Charcoal,
     CraftingTable,
     Chest,
+    Sandstone,
+    Gravel,
+    Clay,
+    Ice,
+    Cactus,
+    Beef,
+    CookedBeef,
+    Porkchop,
+    CookedPorkchop,
+    Chicken,
+    CookedChicken,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -124,6 +135,17 @@ impl Item {
             Item::Seeds => "Семена пшеницы",
             Item::Wheat => "Пшеница",
             Item::Bread => "Хлеб",
+            Item::Sandstone => "Песчаник",
+            Item::Gravel => "Гравий",
+            Item::Clay => "Глина",
+            Item::Ice => "Лёд",
+            Item::Cactus => "Кактус",
+            Item::Beef => "Сырая говядина",
+            Item::CookedBeef => "Стейк",
+            Item::Porkchop => "Сырая свинина",
+            Item::CookedPorkchop => "Жареная свинина",
+            Item::Chicken => "Сырая курица",
+            Item::CookedChicken => "Жареная курица",
         }
     }
 
@@ -173,6 +195,11 @@ impl Item {
             Item::Bricks => Some(Material::Bricks),
             Item::Snow => Some(Material::Snow),
             Item::Leaves => Some(Material::Leaves),
+            Item::Sandstone => Some(Material::Sandstone),
+            Item::Gravel => Some(Material::Gravel),
+            Item::Clay => Some(Material::Clay),
+            Item::Ice => Some(Material::Ice),
+            Item::Cactus => Some(Material::Cactus),
             _ => None,
         }
     }
@@ -193,11 +220,16 @@ impl Item {
             Material::CoalOre => Some(Item::Coal),
             Material::IronOre => pickaxe.is_some_and(|t| t >= 1).then_some(Item::IronOre),
             Material::DiamondOre => pickaxe.is_some_and(|t| t >= 2).then_some(Item::Diamond),
+            Material::Sandstone => Some(Item::Sandstone),
+            Material::Gravel => Some(Item::Gravel),
+            Material::Clay => Some(Item::Clay),
+            Material::Ice => Some(Item::Ice),
+            Material::Cactus => Some(Item::Cactus),
         }
     }
 
     /// Every item, for the creative catalogue and commands.
-    pub const ALL: [Item; 41] = [
+    pub const ALL: [Item; 52] = [
         Item::Dirt,
         Item::Stone,
         Item::Sand,
@@ -206,6 +238,11 @@ impl Item {
         Item::Bricks,
         Item::Snow,
         Item::Leaves,
+        Item::Sandstone,
+        Item::Gravel,
+        Item::Clay,
+        Item::Ice,
+        Item::Cactus,
         Item::Coal,
         Item::Charcoal,
         Item::IronOre,
@@ -235,6 +272,12 @@ impl Item {
         Item::DiamondSword,
         Item::Mutton,
         Item::CookedMutton,
+        Item::Beef,
+        Item::CookedBeef,
+        Item::Porkchop,
+        Item::CookedPorkchop,
+        Item::Chicken,
+        Item::CookedChicken,
         Item::Wool,
         Item::Seeds,
         Item::Wheat,
@@ -260,6 +303,10 @@ impl Item {
             Item::Mutton => Some((3.0, 1.0)),
             Item::CookedMutton => Some((8.0, 4.0)),
             Item::Bread => Some((6.0, 2.0)),
+            Item::Beef | Item::Porkchop => Some((3.0, 1.0)),
+            Item::CookedBeef | Item::CookedPorkchop => Some((9.0, 5.0)),
+            Item::Chicken => Some((2.0, 0.0)),
+            Item::CookedChicken => Some((7.0, 3.0)),
             _ => None,
         }
     }

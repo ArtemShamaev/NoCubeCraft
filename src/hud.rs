@@ -384,10 +384,11 @@ fn update_debug(
     let p = player.translation;
     let (meshed, pending, triangles) = terrain.chunk_counts();
     text.0 = format!(
-        "{fps:.0} FPS\nXYZ {:.1} {:.1} {:.1}\nchunks {meshed}, building {pending}, {}k triangles",
+        "{fps:.0} FPS\nXYZ {:.1} {:.1} {:.1}\n{:?}\nchunks {meshed}, building {pending}, {}k triangles",
         p.x,
         p.y,
         p.z,
+        terrain.biome(p.x, p.z),
         triangles / 1000
     );
 }

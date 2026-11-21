@@ -20,6 +20,11 @@ LAYERS = [
     ("leaves", "Moss002"),
     ("snow", "Snow010A"),
     ("bricks", "Bricks113A"),
+    ("sandstone", "Rock022"),
+    ("gravel", "Gravel042"),
+    ("clay", "Clay005"),
+    ("ice", "Ice003"),
+    ("cactus", "Moss003"),
 ]
 
 

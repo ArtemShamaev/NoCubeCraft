@@ -1,0 +1,56 @@
+# Pushing a tag like v0.2 builds the single-file game for Linux and Windows
+# and attaches both files to a GitHub release.
+name: Release
+
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          # An old Ubuntu, so the Linux file runs on any distro with glibc 2.35 or newer.
+          - os: ubuntu-22.04
+            built: target/release/nocubecraft
+            file: NoCubeCraft.x86_64
+          - os: windows-latest
+            built: target/release/nocubecraft.exe
+            file: NoCubeCraft.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev libudev-dev libwayland-dev libxkbcommon-dev
+      - run: cargo build --release
+      - run: mv ${{ matrix.built }} ${{ matrix.file }}
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.file }}
+          path: ${{ matrix.file }}
+
+  release:
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            NoCubeCraft.x86_64
+            NoCubeCraft.exe
+          body: |
+            Скачайте файл для своей системы и запустите его — больше ничего не нужно.
+
+            - **Windows:** `NoCubeCraft.exe`
+            - **Linux:** `NoCubeCraft.x86_64`; перед первым запуском сделайте его исполняемым: `chmod +x NoCubeCraft.x86_64` (или «Разрешить запуск» в свойствах файла).

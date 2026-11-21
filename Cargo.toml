@@ -1,0 +1,24 @@
+[package]
+name = "barnocraft"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+avian3d = "0.8.0"
+bevy = { version = "0.20.1", features = ["wav", "jpeg"] }
+meshopt = "0.7.0"
+noise = "0.9"
+ron = "0.12.3"
+serde = { version = "1.0.229", features = ["derive"] }
+
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
+
+[lints.clippy]
+# Bevy systems take their dependencies as arguments.
+too_many_arguments = "allow"
+# Bevy queries spell out their filters.
+type_complexity = "allow"

@@ -1,0 +1,12 @@
+Terrain textures from ambientCG (https://ambientcg.com), CC0 1.0 public domain.
+Processed by tools/prepare_textures.py.
+
+grass   Grass004
+dirt    Ground103
+stone   Rock030
+sand    Ground080
+planks  Planks037A
+bark    Bark014
+leaves  Moss002
+snow    Snow010A
+bricks  Bricks113A

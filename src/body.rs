@@ -3,7 +3,10 @@
 use avian3d::prelude::*;
 use bevy::prelude::*;
 
-use crate::{AppState, terrain::Terrain};
+use crate::{
+    AppState,
+    terrain::{CELL, SHARDS_Y, Shape, Terrain},
+};
 
 const GROUND_ACCELERATION: f32 = 14.0;
 const AIR_ACCELERATION: f32 = 2.0;
@@ -41,6 +44,8 @@ pub enum Layer {
     Solid,
     /// Small props bodies walk through, such as torches and crops. Rays still hit them.
     Walkthrough,
+    /// Pieces of the world falling down; they only hit solid things.
+    Falling,
 }
 
 /// Controllers that set [`Body::wish`] and [`Body::jump`] run before this.
@@ -108,7 +113,8 @@ fn move_bodies(
     for (entity, mut body, mut transform) in &mut bodies {
         let body = &mut *body;
         // Ground that isn't collidable yet would let bodies fall through; wait for it.
-        if !terrain.has_collision_at(transform.translation) {
+        let ahead = transform.translation + body.velocity * dt - Vec3::Y;
+        if !terrain.has_collision_at(transform.translation) || !terrain.has_collision_at(ahead) {
             continue;
         }
         let offset = body.center_offset();
@@ -147,6 +153,8 @@ fn move_bodies(
         };
         let horizontal = body.velocity.with_y(0.0).lerp(wish, 1.0 - (-acceleration * dt).exp());
 
+        // The Shards pull only gently.
+        let gravity = if transform.translation.y > SHARDS_Y - 500.0 { GRAVITY * 0.45 } else { GRAVITY };
         let jumped = was_grounded && body.jump && !body.in_water;
         let mut velocity = if body.in_water {
             let target = if body.jump { SWIM_UP_SPEED } else { -SINK_SPEED };
@@ -159,7 +167,7 @@ fn move_bodies(
                     let along = horizontal - normal * horizontal.dot(normal);
                     along.normalize_or_zero() * horizontal.length()
                 }
-                None => horizontal.with_y((body.velocity.y - GRAVITY * dt).max(-MAX_FALL_SPEED)),
+                None => horizontal.with_y((body.velocity.y - gravity * dt).max(-MAX_FALL_SPEED)),
             }
         };
         body.fall_speed = body.fall_speed.max(-velocity.y);
@@ -234,5 +242,28 @@ fn move_bodies(
 
         transform.translation = center - offset;
         body.velocity = velocity;
+        // A block placed into a body would let it slip out through the ground's underside.
+        if let Some(feet) = free_above(&terrain, transform.translation, body.height) {
+            transform.translation.y = feet;
+            body.velocity.y = 0.0;
+        }
     }
+}
+
+/// If a body standing at `feet` is stuck in a block, the height of the nearest place
+/// above where it fits.
+fn free_above(terrain: &Terrain, feet: Vec3, height: f32) -> Option<f32> {
+    let solid = |cell: IVec3| {
+        let block = terrain.block(cell);
+        !block.is_air() && block.shape == Shape::CUBE
+    };
+    let stuck = ((feet + Vec3::Y * (height / 2.0).min(0.3)) / CELL).floor().as_ivec3();
+    if !solid(stuck) {
+        return None;
+    }
+    let tall = (height / CELL).ceil() as i32;
+    (1..64)
+        .map(|up| stuck + IVec3::Y * up)
+        .find(|base| (0..tall).all(|i| !solid(*base + IVec3::Y * i)))
+        .map(|base| base.y as f32 * CELL + 0.01)
 }

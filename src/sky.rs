@@ -12,9 +12,8 @@ use bevy::{
 
 use crate::{
     AppState,
-    player::PlayerCamera,
     settings::Settings,
-    terrain::{Terrain, ViewDistance},
+    terrain::{SHARDS_Y, Terrain, ViewDistance},
 };
 
 const DAY_LENGTH_SECS: f32 = 600.0;
@@ -41,6 +40,9 @@ const WATER_FOG: Srgba = Srgba::rgb(0.05, 0.2, 0.26);
 const WATER_FOG_END: f32 = 24.0;
 const CAVE_FOG: Srgba = Srgba::rgb(0.02, 0.02, 0.025);
 const CAVE_FOG_END: f32 = 45.0;
+/// The Shards' sky: violet haze over the void.
+const VOID_SKY: Srgba = Srgba::rgb(0.36, 0.22, 0.5);
+const VOID_ZENITH: Srgba = Srgba::rgb(0.08, 0.04, 0.17);
 
 pub struct SkyPlugin;
 
@@ -49,6 +51,7 @@ impl Plugin for SkyPlugin {
         embedded_asset!(app, "shaders/sky.wesl");
         app.add_plugins(MaterialPlugin::<SkyMaterial>::default())
             .insert_resource(DirectionalLightShadowMap { size: 1024 })
+            .add_systems(OnEnter(AppState::Menu), (spawn_sun, spawn_dome))
             .add_systems(OnEnter(AppState::Game), (spawn_sun, spawn_dome))
             .add_systems(Update, (add_fog, advance, follow_camera).chain().run_if(resource_exists::<TimeOfDay>));
     }
@@ -65,9 +68,9 @@ impl TimeOfDay {
     }
 }
 
-fn spawn_sun(mut commands: Commands, settings: Res<Settings>) {
+fn spawn_sun(mut commands: Commands, state: Res<State<AppState>>, settings: Res<Settings>) {
     commands.spawn((
-        DespawnOnExit(AppState::Game),
+        DespawnOnExit(state.get().clone()),
         DirectionalLight { shadow_maps_enabled: settings.shadows, ..default() },
         CascadeShadowConfigBuilder {
             num_cascades: 2,
@@ -93,6 +96,8 @@ struct SkyParams {
     sun: Vec4,
     sun_color: Vec4,
     misc: Vec4,
+    /// Cave fog colour; w: how far underground the eye is, 0..1.
+    cave: Vec4,
 }
 
 impl Material for SkyMaterial {
@@ -115,10 +120,15 @@ impl Material for SkyMaterial {
 #[derive(Component)]
 struct Dome(Handle<SkyMaterial>);
 
-fn spawn_dome(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut materials: ResMut<Assets<SkyMaterial>>) {
+fn spawn_dome(
+    mut commands: Commands,
+    state: Res<State<AppState>>,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<SkyMaterial>>,
+) {
     let material = materials.add(SkyMaterial::default());
     commands.spawn((
-        DespawnOnExit(AppState::Game),
+        DespawnOnExit(state.get().clone()),
         Dome(material.clone()),
         Mesh3d(meshes.add(Sphere::new(DOME_RADIUS).mesh().uv(32, 18))),
         MeshMaterial3d(material),
@@ -128,7 +138,7 @@ fn spawn_dome(mut commands: Commands, mut meshes: ResMut<Assets<Mesh>>, mut mate
     ));
 }
 
-fn follow_camera(camera: Single<&GlobalTransform, With<PlayerCamera>>, mut dome: Single<&mut Transform, With<Dome>>) {
+fn follow_camera(camera: Single<&GlobalTransform, With<Camera3d>>, mut dome: Single<&mut Transform, With<Dome>>) {
     dome.translation = camera.translation();
 }
 
@@ -148,7 +158,7 @@ fn advance(
     sun: Single<(&mut DirectionalLight, &mut Transform)>,
     terrain: Res<Terrain>,
     view: Res<ViewDistance>,
-    mut fog: Query<(&mut DistanceFog, &GlobalTransform), With<PlayerCamera>>,
+    mut fog: Query<(&mut DistanceFog, &GlobalTransform), With<Camera3d>>,
     dome: Single<&Dome>,
     mut sky_materials: ResMut<Assets<SkyMaterial>>,
     real: Res<Time<Real>>,
@@ -163,7 +173,9 @@ fn advance(
     let day = smoothstep(-0.12, 0.25, elevation);
     let dusk = (1.0 - (elevation / 0.3).abs()).clamp(0.0, 1.0) * smoothstep(-0.2, 0.0, elevation);
 
-    let sky = NIGHT_SKY.mix(&DAY_SKY, day).mix(&DUSK_SKY, dusk * 0.6);
+    let eye = fog.iter().next().map(|(_, g)| g.translation());
+    let void = eye.map_or(0.0, |e| smoothstep(SHARDS_Y - 600.0, SHARDS_Y - 200.0, e.y));
+    let sky = NIGHT_SKY.mix(&DAY_SKY, day).mix(&DUSK_SKY, dusk * 0.6).mix(&VOID_SKY, void);
     let sunlight = Srgba::WHITE.mix(&Srgba::rgb(1.0, 0.62, 0.38), dusk);
 
     let (mut light, mut transform) = sun.into_inner();
@@ -174,14 +186,13 @@ fn advance(
     };
     *transform = Transform::default().looking_to(-light_dir, Vec3::Y);
     // Deep underground the sky's light doesn't reach; only torches help there.
-    let eye = fog.iter().next().map(|(_, g)| g.translation());
     let under = eye.map_or(0.0, |e| smoothstep(3.0, 10.0, terrain.surface_height(e.x, e.z) - e.y));
     light.illuminance = lux * (1.0 - under);
     light.color = color.into();
 
     clear.0 = sky.into();
     if let Some(mut material) = sky_materials.get_mut(&dome.0) {
-        let zenith = NIGHT_ZENITH.mix(&DAY_ZENITH, day);
+        let zenith = NIGHT_ZENITH.mix(&DAY_ZENITH, day).mix(&VOID_ZENITH, void);
         let linear = |c: Srgba| LinearRgba::from(c).to_vec4();
         material.params = SkyParams {
             zenith: linear(zenith),
@@ -189,6 +200,7 @@ fn advance(
             sun: sun_dir.extend(day),
             sun_color: LinearRgba::from(sunlight).to_vec3().extend(dusk),
             misc: Vec4::new(real.elapsed_secs() % 10_000.0, 0.0, 0.0, 0.0),
+            cave: LinearRgba::from(CAVE_FOG).to_vec3().extend(under),
         };
     }
     ambient.color = Srgba::rgb(0.75, 0.82, 1.0).mix(&Srgba::WHITE, day).into();

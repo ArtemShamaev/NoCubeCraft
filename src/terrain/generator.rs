@@ -1,10 +1,11 @@
-//! Deterministic world: height map, shaped surface cells, caves, ores and trees.
+//! Deterministic world: height map, shaped surface cells, caves, ores, trees and ruins.
 
 use bevy::math::{IVec2, IVec3, Vec3};
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin, RidgedMulti};
 
 use super::{
     blocks::{Block, Material, Shape},
+    shards::{self, Shards},
     water::SEA_LEVEL,
 };
 
@@ -49,6 +50,7 @@ pub struct Generator {
     snow: Perlin,
     temperature: Fbm<Perlin>,
     humidity: Fbm<Perlin>,
+    pub shards: Shards,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -86,6 +88,7 @@ impl Generator {
             snow: Perlin::new(seed.wrapping_add(8)),
             temperature: Fbm::new(seed.wrapping_add(11)).set_octaves(3).set_frequency(1.0 / 900.0),
             humidity: Fbm::new(seed.wrapping_add(12)).set_octaves(3).set_frequency(1.0 / 700.0),
+            shards: Shards::new(seed),
         }
     }
 
@@ -164,6 +167,9 @@ impl Generator {
     /// `n`³ cells of edge `cell`, the first one's low corner at `min`; x fastest, then y, then z.
     /// Caves and ores only appear when `detail` is set; far away nobody sees them.
     pub fn sample(&self, min: Vec3, cell: f32, n: usize, detail: bool) -> Vec<Block> {
+        if shards::contains(min.y, min.y + cell * n as f32) {
+            return self.shards.sample(min, cell, n);
+        }
         let columns = Columns::new(self, min, cell, n);
         let mut lattice = Lattice::new(min.floor().as_ivec3(), cell * n as f32);
         let mut out = vec![Block::AIR; n * n * n];
@@ -199,6 +205,7 @@ impl Generator {
         }
 
         self.plant_trees(&mut out, min, cell, n);
+        self.build_structures(&mut out, min, cell, n);
         out
     }
 
@@ -533,7 +540,7 @@ impl Tree {
     }
 }
 
-fn hash2(p: IVec2) -> u32 {
+pub(super) fn hash2(p: IVec2) -> u32 {
     let mut h = (p.x as u32).wrapping_mul(0x8da6_b343) ^ (p.y as u32).wrapping_mul(0xd816_3841);
     h = h.wrapping_mul(747_796_405).wrapping_add(2_891_336_453);
     h = ((h >> ((h >> 28) + 4)) ^ h).wrapping_mul(277_803_737);
@@ -546,7 +553,7 @@ fn hash3(p: IVec3, seed: u32) -> f32 {
 }
 
 /// Smooth value noise in [0, 1].
-fn value_noise(p: Vec3, seed: u32) -> f32 {
+pub(super) fn value_noise(p: Vec3, seed: u32) -> f32 {
     let base = p.floor().as_ivec3();
     let t = p - base.as_vec3();
     let t = t * t * (Vec3::splat(3.0) - 2.0 * t);

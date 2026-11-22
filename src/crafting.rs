@@ -46,7 +46,7 @@ const STONE_TOOLS: [Recipe; 4] = tools!(Stone, StonePickaxe, StoneAxe, StoneShov
 const IRON_TOOLS: [Recipe; 4] = tools!(IronIngot, IronPickaxe, IronAxe, IronShovel, IronSword);
 const DIAMOND_TOOLS: [Recipe; 4] = tools!(Diamond, DiamondPickaxe, DiamondAxe, DiamondShovel, DiamondSword);
 
-const BASICS: [Recipe; 12] = [
+const BASICS: [Recipe; 19] = [
     shapeless(Planks, 4, &[Wood]),
     shaped(Stick, 4, &["P", "P"], &[P]),
     shaped(CraftingTable, 1, &["PP", "PP"], &[P]),
@@ -59,6 +59,13 @@ const BASICS: [Recipe; 12] = [
     shaped(Bricks, 4, &["SS", "SS"], &[('S', Stone)]),
     shapeless(Seeds, 1, &[Wheat]),
     shaped(Sandstone, 4, &["SS", "SS"], &[('S', Sand)]),
+    shapeless(Glue, 4, &[Clay, Wheat]),
+    shaped(Brace, 4, &["|I|"], &[S, ('I', IronIngot)]),
+    shaped(Activator, 1, &[" I ", "IDI", " I "], &[('I', IronIngot), ('D', Diamond)]),
+    shaped(Rift, 1, &[" D ", "DAD", " D "], &[('D', Diamond), ('A', Activator)]),
+    shapeless(Thread, 2, &[Wool]),
+    shaped(Bow, 1, &[" |s", "| s", " |s"], &[S, ('s', Thread)]),
+    shaped(Arrow, 4, &["G", "|", "F"], &[('G', Gravel), S, ('F', Feather)]),
 ];
 
 /// Every crafting recipe, in recipe-book order.

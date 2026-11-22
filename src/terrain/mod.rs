@@ -2,7 +2,9 @@ mod blocks;
 mod generator;
 mod material;
 mod mesher;
+mod shards;
 mod store;
+mod structures;
 mod textures;
 mod water;
 
@@ -23,6 +25,7 @@ use generator::TREE_HEIGHT;
 pub use generator::{Biome, TREE_REACH};
 pub use material::TerrainMaterial;
 pub use material::albedo;
+pub use shards::{ALTAR, SHARDS_ABOVE, SHARDS_BELOW, SHARDS_Y};
 pub use store::EditsSnapshot;
 use store::{ChunkBlocks, ChunkKey, MeshJob, VoxelStore, block_in, chunk_of};
 pub use water::SEA_LEVEL;
@@ -35,10 +38,12 @@ const ROOT_LEVEL: u8 = 4;
 /// (full-detail blocks with collision) only reaches a couple of dozen metres.
 const SPLIT_DISTANCE: f32 = 1.1;
 const SPLIT_TO_FINEST: f32 = 0.75;
-/// Lowest and highest root chunk rows; the world spans -256 m to 256 m.
-const ROOT_ROWS: [i32; 2] = [-1, 0];
+/// Root chunk rows: the world spans -256 m to 256 m, and the Shards float in row 8.
+const ROOT_ROWS: [i32; 3] = [-1, 0, 8];
 /// Chunks sealed under the surface only matter to someone in a cave nearby.
 const BURIED_VIEW: f32 = 20.0;
+/// From inside a cave, until its fog is all but opaque.
+const CAVE_VIEW: f32 = 40.0;
 const MAX_TASKS_IN_FLIGHT: usize = 10;
 /// Chunks this coarse are beyond the shadow distance.
 const SHADOWLESS_LEVEL: u8 = 2;
@@ -64,7 +69,6 @@ impl Plugin for TerrainPlugin {
             Update,
             (select_chunks, start_builds, finish_builds, retire_chunks, stream_water)
                 .chain()
-                .run_if(in_state(AppState::Game))
                 .run_if(resource_exists::<Terrain>),
         );
     }
@@ -181,6 +185,16 @@ impl Terrain {
         p.y < SEA_LEVEL && p.y > self.surface_height(p.x, p.z) - 1.0
     }
 
+    /// Where a rift sets someone down in the Shards.
+    pub fn shards_arrival(&self) -> Vec3 {
+        shards::arrival(&self.store.generator().shards)
+    }
+
+    /// The closest ruin to a point: what it is and the middle of its floor.
+    pub fn nearest_ruin(&self, p: Vec3) -> Option<(&'static str, Vec3)> {
+        self.store.generator().nearest_structure(p)
+    }
+
     /// A dry spot near the world origin, standing on the ground.
     pub fn find_spawn(&self) -> Vec3 {
         let mut p = IVec2::ZERO;
@@ -235,6 +249,15 @@ impl Terrain {
                 }
             }
         }
+    }
+
+    /// Whether every mesh and collider between `lo` and `hi` shows the blocks as they are now.
+    pub fn is_current(&self, lo: Vec3, hi: Vec3) -> bool {
+        let lo = (lo / blocks::CHUNK_SIZE).floor().as_ivec3();
+        let hi = (hi / blocks::CHUNK_SIZE).floor().as_ivec3();
+        self.chunks.iter().all(|(key, chunk)| {
+            key.level != 0 || chunk.task.is_none() || key.pos.cmplt(lo).any() || key.pos.cmpgt(hi).any()
+        })
     }
 
     /// Steps through cells along a ray until one isn't empty.
@@ -335,13 +358,15 @@ impl Terrain {
     /// Decides which chunks should be shown, from coarse far away to fine nearby.
     fn select(&mut self, eye: Vec3, view: f32) {
         let mut wanted = HashSet::new();
+        let buried_view = if eye.y < self.surface_height(eye.x, eye.z) - 3.0 { CAVE_VIEW } else { BURIED_VIEW };
         let root = blocks::CHUNK_SIZE * (1 << ROOT_LEVEL) as f32;
         let lo = ((eye.xz() - view) / root).floor().as_ivec2();
         let hi = ((eye.xz() + view) / root).floor().as_ivec2();
         for z in lo.y..=hi.y {
             for x in lo.x..=hi.x {
                 for y in ROOT_ROWS {
-                    self.visit(ChunkKey { level: ROOT_LEVEL, pos: IVec3::new(x, y, z) }, eye, view, &mut wanted);
+                    let key = ChunkKey { level: ROOT_LEVEL, pos: IVec3::new(x, y, z) };
+                    self.visit(key, eye, (view, buried_view), &mut wanted);
                 }
             }
         }
@@ -360,17 +385,18 @@ impl Terrain {
         self.selected_at = Some(eye);
     }
 
-    fn visit(&mut self, key: ChunkKey, eye: Vec3, view: f32, wanted: &mut HashSet<ChunkKey>) {
+    /// `view` is how far terrain is drawn: anywhere, and sealed underground.
+    fn visit(&mut self, key: ChunkKey, eye: Vec3, view: (f32, f32), wanted: &mut HashSet<ChunkKey>) {
         let origin = key.origin();
         let size = key.size();
         let distance = eye.distance(eye.clamp(origin, origin + size));
-        if distance > view {
+        if distance > view.0 {
             return;
         }
         let (ground_lo, ground_hi) = self.bounds(key);
-        let above = origin.y > ground_hi + TREE_HEIGHT;
+        let above = origin.y > ground_hi + TREE_HEIGHT && !shards::contains(origin.y, origin.y + size);
         let buried = origin.y + size < ground_lo - 2.0;
-        if (above || (buried && distance > BURIED_VIEW)) && !self.has_edits_inside(key) {
+        if (above || (buried && distance > view.1)) && !self.has_edits_inside(key) {
             return;
         }
         let split = if key.level == 1 { SPLIT_TO_FINEST } else { SPLIT_DISTANCE };
@@ -535,6 +561,7 @@ fn start_builds(mut terrain: ResMut<Terrain>, anchor: Single<&Transform, With<Te
 
 fn finish_builds(
     mut commands: Commands,
+    state: Res<State<AppState>>,
     mut terrain: ResMut<Terrain>,
     assets: Res<TerrainAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -566,7 +593,7 @@ fn finish_builds(
                     commands
                         .spawn((
                             TerrainChunk,
-                            DespawnOnExit(AppState::Game),
+                            DespawnOnExit(state.get().clone()),
                             MeshMaterial3d(assets.material.clone()),
                             Transform::from_translation(key.origin()),
                         ))
@@ -607,6 +634,7 @@ fn retire_chunks(mut commands: Commands, mut terrain: ResMut<Terrain>) {
 
 fn stream_water(
     mut commands: Commands,
+    state: Res<State<AppState>>,
     mut terrain: ResMut<Terrain>,
     view: Res<ViewDistance>,
     assets: Res<TerrainAssets>,
@@ -638,7 +666,7 @@ fn stream_water(
             let entity = water::mesh(terrain.store.generator(), tile).map(|mesh| {
                 commands
                     .spawn((
-                        DespawnOnExit(AppState::Game),
+                        DespawnOnExit(state.get().clone()),
                         Mesh3d(meshes.add(mesh)),
                         MeshMaterial3d(assets.water.clone()),
                         Transform::from_translation(Vec3::new(tile.x as f32, 0.0, tile.y as f32) * water::TILE),

@@ -9,7 +9,9 @@ use crate::{
     AppState, Creative,
     body::Body,
     containers::{ChestState, FurnaceState},
+    goals::Goals,
     items::{Inventory, PropKind},
+    mobs::{Mob, SavedDog, SavedDogs},
     player::{Player, PlayerStart, Spawning},
     props::{self, Crop, Prop, PropAssets},
     sky::{START_TIME, TimeOfDay},
@@ -47,6 +49,10 @@ struct State {
     vitals: Vitals,
     time_of_day: f32,
     props: Vec<SavedProp>,
+    #[serde(default)]
+    dogs: Vec<SavedDog>,
+    #[serde(default)]
+    goals: Goals,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -93,6 +99,8 @@ fn load(mut commands: Commands, mut world: ResMut<CurrentWorld>, prop_assets: Re
             commands.insert_resource(state.inventory);
             commands.insert_resource(state.vitals);
             commands.insert_resource(TimeOfDay(state.time_of_day));
+            commands.insert_resource(SavedDogs(state.dogs));
+            commands.insert_resource(state.goals);
         }
         result => {
             if let Err(error) = result {
@@ -108,6 +116,7 @@ fn load(mut commands: Commands, mut world: ResMut<CurrentWorld>, prop_assets: Re
             commands.insert_resource(Inventory::default());
             commands.insert_resource(Vitals::default());
             commands.insert_resource(TimeOfDay(START_TIME));
+            commands.insert_resource(Goals::default());
         }
     }
     commands.insert_resource(terrain);
@@ -164,6 +173,8 @@ pub struct SaveParams<'w, 's> {
     inventory: Option<Res<'w, Inventory>>,
     vitals: Option<Res<'w, Vitals>>,
     time_of_day: Option<Res<'w, TimeOfDay>>,
+    goals: Option<Res<'w, Goals>>,
+    mobs: Query<'w, 's, (&'static Mob, &'static Transform)>,
     props: Query<
         'w,
         's,
@@ -200,6 +211,8 @@ impl SaveParams<'_, '_> {
                     chest: chest.cloned(),
                 })
                 .collect(),
+            dogs: self.mobs.iter().filter_map(|(mob, t)| SavedDog::of(mob, t)).collect(),
+            goals: *self.goals.as_deref()?,
         };
         Some(Snapshot { state, edits: self.terrain.as_ref()?.edits_snapshot() })
     }
@@ -239,6 +252,8 @@ fn close(mut commands: Commands) {
     commands.remove_resource::<Vitals>();
     commands.remove_resource::<TimeOfDay>();
     commands.remove_resource::<PlayerStart>();
+    commands.remove_resource::<Goals>();
+    commands.remove_resource::<SavedDogs>();
 }
 
 #[cfg(test)]
@@ -267,6 +282,8 @@ mod tests {
                 furnace: None,
                 chest: Some(ChestState { slots: vec![Some(crate::items::Stack::new(Item::Diamond, 3)); 2] }),
             }],
+            dogs: vec![SavedDog { position: Vec3::X, health: 7.0, sitting: true }],
+            goals: Goals { stage: 4 },
         };
         let text = ron::to_string(&state).unwrap();
         let back: State = ron::from_str(&text).unwrap();
@@ -274,5 +291,7 @@ mod tests {
         assert_eq!(back.props[0].age, 12.0);
         assert_eq!(back.props[0].chest.as_ref().unwrap().slots[1].unwrap().count, 3);
         assert_eq!(back.position, state.position);
+        assert!(back.dogs[0].sitting);
+        assert_eq!(back.goals.stage, 4);
     }
 }

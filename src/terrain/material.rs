@@ -54,5 +54,12 @@ pub fn albedo(material: Material) -> [f32; 3] {
         Material::Clay => [0.349, 0.190, 0.107],
         Material::Ice => [0.25, 0.4, 0.5],
         Material::Cactus => [0.05, 0.14, 0.02],
+        Material::Brace => [0.17, 0.08, 0.035],
+        Material::Activator => [0.15, 0.27, 0.25],
+        Material::Shardstone => [0.12, 0.07, 0.15],
+        Material::Core => [0.2, 0.6, 0.65],
+        Material::Rift => [0.35, 0.15, 0.6],
+        Material::Cache => [0.45, 0.3, 0.08],
+        Material::Altar => [0.4, 0.3, 0.5],
     }
 }

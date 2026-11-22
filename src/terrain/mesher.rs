@@ -19,9 +19,20 @@ const SKIRT_DEPTH: i32 = 3;
 /// Brightness for 0..=3 open neighbours around a vertex.
 const AO_CURVE: [f32; 4] = [0.5, 0.68, 0.84, 1.0];
 
-/// Vertex colour multiplying the texture: sandstone reuses grey layered rock, warmed up.
-fn base_tint(material: Material) -> [f32; 3] {
-    if material == Material::Sandstone { [1.6, 1.2, 0.75] } else { [1.0; 3] }
+/// Vertex colour multiplying the texture: some materials reuse another's texture, recoloured,
+/// and glue gives a block a green sheen.
+fn base_tint(material: Material, glued: bool) -> [f32; 3] {
+    let [r, g, b] = match material {
+        Material::Sandstone => [1.6, 1.2, 0.75],
+        Material::Brace => [2.2, 1.9, 1.5],
+        Material::Activator => [0.7, 1.5, 2.0],
+        Material::Shardstone | Material::Core => [1.5, 0.95, 2.1],
+        Material::Rift => [1.4, 0.6, 2.4],
+        Material::Cache => [2.0, 1.5, 0.6],
+        Material::Altar => [2.2, 1.6, 2.6],
+        _ => [1.0; 3],
+    };
+    if glued { [r * 0.8, g * 1.25, b * 0.7] } else { [r, g, b] }
 }
 
 #[derive(Default)]
@@ -152,6 +163,7 @@ pub fn mesh(blocks: &[Block], cell: f32) -> ChunkMesh {
 #[derive(Clone, Copy, PartialEq)]
 struct FaceKey {
     material: Material,
+    glued: bool,
     ao: [u8; 4],
     skirt: bool,
 }
@@ -182,7 +194,7 @@ fn greedy_cubes(grid: &Grid, side: usize, cell: f32, out: &mut ChunkMesh) {
                                 [(-1, -1), (1, -1), (1, 1), (-1, 1)].map(|(du, dv)| grid.ao(c, side, du, dv) as u8),
                             )
                         };
-                        FaceKey { material, ao, skirt }
+                        FaceKey { material, glued: block.glued && !skirt, ao, skirt }
                     });
             }
         }
@@ -234,7 +246,7 @@ fn greedy_cubes(grid: &Grid, side: usize, cell: f32, out: &mut ChunkMesh) {
 fn emit_quad(grid: &Grid, out: &mut ChunkMesh, corners: [IVec3; 4], cell: f32, normal: Vec3, key: &FaceKey) {
     let base = out.positions.len() as u32;
     let (material, ao) = (key.material, key.ao);
-    let color = base_tint(material);
+    let color = base_tint(material, key.glued);
     // Skirts are flagged so the shader lights them like the ground.
     let ore = if key.skirt { [layer(material) as f32, -1.0] } else { ore_weights(material) };
     for (p, a) in corners.iter().zip(ao) {
@@ -257,6 +269,7 @@ fn ore_weights(material: Material) -> [f32; 2] {
         Material::CoalOre => 1.0,
         Material::IronOre => 2.0,
         Material::DiamondOre => 3.0,
+        Material::Core | Material::Rift | Material::Altar => 4.0,
         _ => 0.0,
     };
     [layer(material) as f32, code]
@@ -272,7 +285,7 @@ fn shaped_cells(grid: &Grid, cell: f32, out: &mut ChunkMesh) {
                 if block.is_air() || block.shape == Shape::CUBE {
                     continue;
                 }
-                let color = base_tint(block.material);
+                let color = base_tint(block.material, block.glued);
                 let ore = ore_weights(block.material);
                 let origin = (c - IVec3::ONE).as_vec3();
                 for polygon in &block.shape.geometry().polygons {

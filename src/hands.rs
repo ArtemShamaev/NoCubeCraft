@@ -2,12 +2,19 @@
 
 use std::collections::HashMap;
 
-use bevy::{light::NotShadowCaster, prelude::*, world_serialization::WorldAssetRoot};
+use bevy::{
+    asset::RenderAssetUsages,
+    image::{CompressedImageFormats, ImageSampler, ImageType},
+    light::NotShadowCaster,
+    prelude::*,
+    world_serialization::{WorldAssetRoot, WorldInstanceReady},
+};
 
 use crate::{
     AppState, Mode,
+    archery::Draw,
     body::Body,
-    icons::ItemIcons,
+    icons::{ItemIcons, head_color},
     items::{Inventory, Item, ToolKind},
     player::{EYE_HEIGHT, Player, PlayerCamera},
 };
@@ -37,6 +44,8 @@ struct Cache {
     quad: Option<Handle<Mesh>>,
     cube: Option<Handle<Mesh>>,
     materials: HashMap<Item, Handle<StandardMaterial>>,
+    /// Tool models recoloured for each tier.
+    tiers: HashMap<u8, Handle<StandardMaterial>>,
 }
 
 fn attach(mut commands: Commands, cameras: Query<Entity, Added<PlayerCamera>>) {
@@ -60,6 +69,7 @@ fn show_item(
     server: Res<AssetServer>,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<StandardMaterial>>,
+    mut images: ResMut<Assets<Image>>,
     mut cache: Local<Cache>,
 ) {
     let (entity, mut held, mut visibility) = held.into_inner();
@@ -76,12 +86,36 @@ fn show_item(
     *visibility = Visibility::Inherited;
     // Tools are held as their 3D models (Kenney, CC0).
     if let Some(path) = tool_model(item) {
+        let tier = item.tool().map_or(0, |t| t.tier);
+        let material = cache
+            .tiers
+            .entry(tier)
+            .or_insert_with(|| {
+                let texture = images.add(tool_colormap(head_color(item)));
+                materials.add(StandardMaterial {
+                    base_color_texture: Some(texture),
+                    perceptual_roughness: 0.7,
+                    ..default()
+                })
+            })
+            .clone();
         commands.entity(entity).remove::<(Mesh3d, MeshMaterial3d<StandardMaterial>)>();
-        commands.spawn((
-            WorldAssetRoot(server.load(GltfAssetLabel::Scene(0).from_asset(path))),
-            Transform::from_xyz(0.02, -0.1, 0.0).with_scale(Vec3::splat(0.85)),
-            ChildOf(entity),
-        ));
+        commands
+            .spawn((
+                WorldAssetRoot(server.load(GltfAssetLabel::Scene(0).from_asset(path))),
+                Transform::from_xyz(0.02, -0.1, 0.0).with_scale(Vec3::splat(0.85)),
+                ChildOf(entity),
+            ))
+            .observe(
+                move |ready: On<WorldInstanceReady>,
+                      mut commands: Commands,
+                      children: Query<&Children>,
+                      meshes: Query<(), With<MeshMaterial3d<StandardMaterial>>>| {
+                    for child in children.iter_descendants(ready.entity).filter(|c| meshes.contains(*c)) {
+                        commands.entity(child).insert(MeshMaterial3d(material.clone()));
+                    }
+                },
+            );
         return;
     }
     let block = item.material();
@@ -126,14 +160,46 @@ fn tool_model(item: Item) -> Option<String> {
     Some(format!("models/kenney/{name}{upgraded}.glb"))
 }
 
+/// Kenney's palette with the grey strip that tool heads use tinted to `head`.
+fn tool_colormap(head: [f32; 3]) -> Image {
+    // Where the strip lies in the 512×512 palette, in pixels.
+    const STRIP: (std::ops::Range<usize>, std::ops::Range<usize>) = (160..192, 384..512);
+    let mut image = Image::from_buffer(
+        include_bytes!("../assets/models/kenney/Textures/colormap.png"),
+        ImageType::Extension("png"),
+        CompressedImageFormats::NONE,
+        true,
+        ImageSampler::Default,
+        RenderAssetUsages::RENDER_WORLD,
+    )
+    .expect("bundled palette decodes");
+    let width = image.width() as usize;
+    let data = image.data.as_mut().expect("decoded pixels");
+    for y in STRIP.1 {
+        for x in STRIP.0.clone() {
+            let px = &mut data[(x + y * width) * 4..][..3];
+            // Keep the strip's shading (it runs from about 125 to 195 grey), a little darker
+            // than the colour itself, which sunlight washes out.
+            let shade = px.iter().map(|v| *v as f32).sum::<f32>() / 3.0 / 230.0;
+            for (v, c) in px.iter_mut().zip(head) {
+                *v = (c * shade * 255.0).min(255.0) as u8;
+            }
+        }
+    }
+    image
+}
+
 fn swing(
     time: Res<Time>,
     mode: Res<State<Mode>>,
     mouse: Res<ButtonInput<MouseButton>>,
+    draw: Res<Draw>,
     held: Single<(&mut Held, &mut Transform)>,
 ) {
     let (mut held, mut transform) = held.into_inner();
-    let using = *mode == Mode::Playing && (mouse.pressed(MouseButton::Left) || mouse.just_pressed(MouseButton::Right));
+    let bow = held.item == Some(Item::Bow);
+    let using = *mode == Mode::Playing
+        && (mouse.pressed(MouseButton::Left) || (mouse.just_pressed(MouseButton::Right) && !bow));
     if using && held.swing <= 0.0 {
         held.swing = SWING_SECS;
     }
@@ -141,7 +207,9 @@ fn swing(
     let t = 1.0 - held.swing / SWING_SECS;
     let arc = if held.swing > 0.0 { (t * std::f32::consts::PI).sin() } else { 0.0 };
     let tool = held.item.is_some_and(|i| i.material().is_none());
-    transform.translation = REST + Vec3::new(-0.08, 0.05, -0.12) * arc;
+    // A drawn bow comes up to the middle of the view and back towards the eye.
+    let pull = draw.pull();
+    transform.translation = REST + Vec3::new(-0.08, 0.05, -0.12) * arc + Vec3::new(-0.2, 0.12, 0.14) * pull;
     transform.rotation = if tool {
         // Tools tilt forward like a chop.
         Quat::from_rotation_z(0.5) * Quat::from_rotation_x(-1.1 * arc) * Quat::from_rotation_y(-0.3)

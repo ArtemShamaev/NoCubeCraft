@@ -12,7 +12,7 @@ use crate::{
     player::Player,
     sky::TimeOfDay,
     survival::{MAX_HEALTH, MAX_HUNGER, Vitals},
-    terrain::Terrain,
+    terrain::{ALTAR, SHARDS_Y, Terrain},
     ui::{self, TextField},
     worlds::CurrentWorld,
 };
@@ -152,7 +152,7 @@ fn run(In(line): In<String>, mut world: World) {
 
 const HELP: &str = "help · gamemode creative|survival · give <предмет> [кол-во] · items
 time set day|night|noon|midnight|0..1 · tp <x> <y> <z> · tp spawn
-heal · feed · kill · clear · seed · summon <моб>";
+heal · feed · kill · clear · seed · summon <моб> · locate [altar]";
 
 fn execute(line: &str, w: &mut World) -> String {
     let words: Vec<&str> = line.split_whitespace().collect();
@@ -238,6 +238,24 @@ fn execute(line: &str, w: &mut World) -> String {
         ["clear"] => {
             *w.inventory = Inventory::default();
             "Инвентарь очищен".into()
+        }
+        ["locate" | "найти", "altar" | "алтарь"] => {
+            let at = w.player.1.translation;
+            let altar = Vec3::new(ALTAR.x, SHARDS_Y + 3.0, ALTAR.y);
+            format!(
+                "Алтарь в Осколках: {:.0} {:.0} {:.0}, {:.0} м",
+                altar.x,
+                altar.y + 1.0,
+                altar.z,
+                altar.distance(at)
+            )
+        }
+        ["locate" | "найти"] => {
+            let at = w.player.1.translation;
+            match w.terrain.nearest_ruin(at) {
+                Some((name, p)) => format!("{name}: {:.0} {:.0} {:.0}, {:.0} м", p.x, p.y + 1.0, p.z, p.distance(at)),
+                None => "Поблизости руин нет".into(),
+            }
         }
         ["seed"] => format!("Сид мира: {}", w.terrain.seed()),
         _ => format!("Неизвестная команда «{line}». help — список команд"),

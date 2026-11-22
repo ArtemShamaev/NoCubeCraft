@@ -88,6 +88,77 @@ fn paint(c: &mut Canvas, item: Item) {
         }
         Item::Clay => c.lump([0.72, 0.5, 0.36], 0.08),
         Item::Ice => c.shape(|p| rounded_box(p, Vec2::splat(0.5), Vec2::splat(0.32), 0.06), [0.7, 0.88, 0.95]),
+        Item::Glue => {
+            c.shape(|p| rounded_box(p, Vec2::new(0.5, 0.58), Vec2::new(0.2, 0.24), 0.06), [0.85, 0.9, 0.8]);
+            c.shape(|p| rounded_box(p, Vec2::new(0.5, 0.28), Vec2::new(0.07, 0.08), 0.02), [0.9, 0.55, 0.2]);
+            c.shape(|p| p.distance(Vec2::new(0.5, 0.62)) - 0.1, [0.45, 0.85, 0.3]);
+        }
+        Item::Brace => {
+            let frame = [0.82, 0.6, 0.35];
+            c.shape(|p| rounded_box(p, Vec2::splat(0.5), Vec2::splat(0.34), 0.03).abs() - 0.05, frame);
+            c.shape(|p| segment(p, Vec2::new(0.2, 0.2), Vec2::new(0.8, 0.8)) - 0.05, frame);
+        }
+        Item::Activator => {
+            c.shape(|p| rounded_box(p, Vec2::splat(0.5), Vec2::splat(0.36), 0.05), [0.3, 0.45, 0.5]);
+            c.shape(|p| p.distance(Vec2::splat(0.5)) - 0.16, [0.3, 0.95, 1.0]);
+            c.shape(|p| p.distance(Vec2::splat(0.5)) - 0.07, [0.9, 1.0, 1.0]);
+        }
+        Item::Shardstone => c.lump([0.55, 0.38, 0.72], 0.18),
+        Item::Core => {
+            c.shape(|p| rotated_square(p, Vec2::splat(0.5), 0.3), [0.35, 0.95, 1.0]);
+            c.shape(|p| p.distance(Vec2::splat(0.5)) - 0.1, [0.95, 1.0, 1.0]);
+        }
+        Item::Rift => {
+            c.shape(|p| rounded_box(p, Vec2::splat(0.5), Vec2::splat(0.36), 0.05), [0.25, 0.12, 0.35]);
+            c.shape(|p| ((p - Vec2::splat(0.5)) / Vec2::new(0.14, 0.3)).length() - 1.0, [0.75, 0.4, 1.0]);
+            c.shape(|p| ((p - Vec2::splat(0.5)) / Vec2::new(0.05, 0.18)).length() - 1.0, [1.0, 0.9, 1.0]);
+        }
+        Item::Bow => {
+            let center = Vec2::new(0.26, 0.74);
+            let along = Vec2::new(1.0, -1.0).normalize();
+            c.shape(
+                |p| ((p.distance(center) - 0.5).abs() - 0.04).max(0.25 - (p - center).normalize().dot(along)),
+                WOOD,
+            );
+            c.shape(|p| segment(p, Vec2::new(0.2, 0.28), Vec2::new(0.72, 0.8)) - 0.012, [0.9, 0.9, 0.85]);
+        }
+        Item::Arrow => {
+            c.shape(|p| segment(p, Vec2::new(0.24, 0.76), Vec2::new(0.72, 0.28)) - 0.025, WOOD);
+            c.shape(|p| rotated_square(p, Vec2::new(0.74, 0.26), 0.1), STONE);
+            for (x, y) in [(0.18, 0.72), (0.28, 0.82)] {
+                c.shape(|p| segment(p, Vec2::new(x, y), Vec2::new(0.3, 0.7)) - 0.035, [0.92, 0.92, 0.9]);
+            }
+        }
+        Item::Bone => {
+            let bone = [0.92, 0.9, 0.82];
+            c.shape(|p| segment(p, Vec2::new(0.3, 0.7), Vec2::new(0.7, 0.3)) - 0.06, bone);
+            for (x, y) in [(0.22, 0.7), (0.3, 0.78), (0.7, 0.22), (0.78, 0.3)] {
+                c.shape(|p| p.distance(Vec2::new(x, y)) - 0.08, bone);
+            }
+        }
+        Item::Thread => {
+            c.shape(|p| (p.distance(Vec2::splat(0.5)) - 0.22).abs() - 0.03, [0.92, 0.92, 0.88]);
+            c.shape(|p| segment(p, Vec2::new(0.62, 0.7), Vec2::new(0.84, 0.86)) - 0.02, [0.92, 0.92, 0.88]);
+        }
+        Item::Feather => {
+            c.shape(
+                |p| (rotate(p - Vec2::splat(0.5), 0.785) / Vec2::new(0.12, 0.34)).length() - 1.0,
+                [0.95, 0.95, 0.95],
+            );
+            c.shape(|p| segment(p, Vec2::new(0.24, 0.76), Vec2::new(0.7, 0.3)) - 0.012, [0.6, 0.6, 0.6]);
+        }
+        Item::Heart => {
+            c.shape(
+                |p| {
+                    let q = p - Vec2::new(0.5, 0.48);
+                    let lobes =
+                        (q - Vec2::new(-0.12, -0.08)).length().min((q - Vec2::new(0.12, -0.08)).length()) - 0.15;
+                    lobes.min(rotated_square(p, Vec2::new(0.5, 0.52), 0.26))
+                },
+                [0.75, 0.35, 1.0],
+            );
+            c.shape(|p| p.distance(Vec2::new(0.42, 0.4)) - 0.05, [1.0, 0.9, 1.0]);
+        }
         Item::Cactus => {
             c.shape(|p| rounded_box(p, Vec2::new(0.5, 0.55), Vec2::new(0.14, 0.32), 0.1), [0.25, 0.55, 0.2]);
             c.shape(|p| rounded_box(p, Vec2::new(0.3, 0.45), Vec2::new(0.06, 0.12), 0.05), [0.25, 0.55, 0.2]);
@@ -142,7 +213,7 @@ fn paint(c: &mut Canvas, item: Item) {
             handle(c);
             let color = head_color(item);
             c.shape(
-                |p| rounded_box(rotate(p - Vec2::new(0.72, 0.28), 0.785), Vec2::ZERO, Vec2::new(0.11, 0.16), 0.08),
+                |p| rounded_box(rotate(p - Vec2::new(0.72, 0.28), -0.785), Vec2::ZERO, Vec2::new(0.11, 0.16), 0.08),
                 color,
             );
         }
@@ -175,7 +246,7 @@ fn paint(c: &mut Canvas, item: Item) {
             handle(c);
             let color = head_color(item);
             c.shape(
-                |p| rounded_box(rotate(p - Vec2::new(0.72, 0.32), -0.785), Vec2::ZERO, Vec2::new(0.1, 0.17), 0.06),
+                |p| rounded_box(rotate(p - Vec2::new(0.72, 0.32), 0.785), Vec2::ZERO, Vec2::new(0.1, 0.17), 0.06),
                 color,
             );
         }
@@ -231,7 +302,8 @@ fn handle(c: &mut Canvas) {
     c.shape(|p| segment(p, Vec2::new(0.2, 0.82), Vec2::new(0.66, 0.36)) - 0.045, WOOD);
 }
 
-fn head_color(item: Item) -> Rgb {
+/// Colour of a tool's head: its material.
+pub fn head_color(item: Item) -> Rgb {
     match item.tool().map_or(1, |t| t.tier) {
         0 => [0.66, 0.49, 0.3],
         1 => STONE,

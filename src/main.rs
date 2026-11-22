@@ -1,14 +1,17 @@
 // No console window behind the game on Windows.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+mod archery;
 mod body;
 mod building;
 mod console;
 mod containers;
 mod crafting;
+mod credits;
 mod effects;
 mod embedded;
 mod falling;
+mod goals;
 mod hands;
 mod hud;
 mod icons;
@@ -47,6 +50,7 @@ pub enum MenuPage {
     Worlds,
     Create,
     Settings,
+    Credits,
 }
 
 /// What the player is doing in the game; decides which input is live.
@@ -60,6 +64,9 @@ pub enum Mode {
     Settings,
     Dead,
     Console,
+    /// The Warden has fallen: the credits roll, then the game is won.
+    Credits,
+    Victory,
 }
 
 /// Creative mode: flying, endless blocks, instant digging, no harm.
@@ -104,6 +111,9 @@ fn main() {
             falling::FallingPlugin,
             hands::HandsPlugin,
             sound::SoundPlugin,
+            archery::ArcheryPlugin,
+            goals::GoalsPlugin,
+            credits::CreditsPlugin,
         ))
         .run();
 }

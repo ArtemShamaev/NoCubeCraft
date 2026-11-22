@@ -12,6 +12,7 @@
 - `models/chicken.glb` — Quaternius, «Chicken» (https://poly.pizza/m/Z3RCoCYss4).
 - `models/spider.glb` — Quaternius, «Spider» (https://poly.pizza/m/yRYJiAJyiM).
 - `models/wolf.glb` — Quaternius, «Wolf» (https://poly.pizza/m/P1gU3Qkr9r).
+- `models/skeleton.glb` — Quaternius, «Skeleton» (https://poly.pizza/m/DM4QScSmbS).
 
 ## Текстуры
 

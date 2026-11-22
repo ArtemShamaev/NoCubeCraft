@@ -35,10 +35,24 @@ pub enum Material {
     Clay,
     Ice,
     Cactus,
+    /// A frame that holds every block it touches to its structure.
+    Brace,
+    /// Sets the structure it belongs to moving as one physical body.
+    Activator,
+    /// Violet rock of the Shards.
+    Shardstone,
+    /// The glowing heart of a shard.
+    Core,
+    /// A way between the world and the Shards.
+    Rift,
+    /// A hoard left in ruins: digging it out gives loot.
+    Cache,
+    /// The Shards' altar, where the Warden is called.
+    Altar,
 }
 
 impl Material {
-    pub const ALL: [Material; 18] = [
+    pub const ALL: [Material; 25] = [
         Material::Air,
         Material::Grass,
         Material::Dirt,
@@ -57,6 +71,13 @@ impl Material {
         Material::Clay,
         Material::Ice,
         Material::Cactus,
+        Material::Brace,
+        Material::Activator,
+        Material::Shardstone,
+        Material::Core,
+        Material::Rift,
+        Material::Cache,
+        Material::Altar,
     ];
 
     pub fn from_u8(value: u8) -> Option<Material> {
@@ -111,17 +132,19 @@ impl Shape {
 pub struct Block {
     pub material: Material,
     pub shape: Shape,
+    /// Smeared with glue: sticks to the structure a physics activator sets moving.
+    pub glued: bool,
 }
 
 impl Block {
-    pub const AIR: Block = Block { material: Material::Air, shape: Shape::CUBE };
+    pub const AIR: Block = Block { material: Material::Air, shape: Shape::CUBE, glued: false };
 
     pub fn new(material: Material, shape: Shape) -> Self {
-        Self { material, shape }
+        Self { material, shape, glued: false }
     }
 
     pub fn solid(material: Material) -> Self {
-        Self { material, shape: Shape::CUBE }
+        Self::new(material, Shape::CUBE)
     }
 
     pub fn is_air(self) -> bool {
@@ -134,11 +157,15 @@ impl Block {
     }
 
     pub fn to_bits(self) -> u16 {
-        self.material as u16 | (self.shape.0 as u16) << 8
+        self.material as u16 | (self.shape.0 as u16) << 8 | (self.glued as u16) << 15
     }
 
     pub fn from_bits(bits: u16) -> Option<Block> {
-        Some(Block { material: Material::from_u8(bits as u8)?, shape: Shape::from_id((bits >> 8) as u8)? })
+        Some(Block {
+            material: Material::from_u8(bits as u8)?,
+            shape: Shape::from_id((bits >> 8) as u8 & 0x7f)?,
+            glued: bits & 0x8000 != 0,
+        })
     }
 }
 
@@ -319,6 +346,8 @@ mod tests {
     fn bits_round_trip() {
         let block = Block::new(Material::Bricks, Shape::inner_corner(2));
         assert_eq!(Block::from_bits(block.to_bits()), Some(block));
+        let glued = Block { glued: true, ..block };
+        assert_eq!(Block::from_bits(glued.to_bits()), Some(glued));
         assert_eq!(Block::from_bits(0xff00), None);
     }
 }

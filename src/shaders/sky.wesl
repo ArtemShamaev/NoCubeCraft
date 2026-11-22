@@ -10,6 +10,9 @@ struct Sky {
     sun_color: vec4<f32>,
     // x: seconds, for drifting clouds.
     misc: vec4<f32>,
+    // rgb: cave fog; w: how far underground the eye is. Any sky glimpsed from a cave, through
+    // rock that isn't drawn, is lost in the fog like everything else.
+    cave: vec4<f32>,
 }
 
 @group(constants::MATERIAL_BIND_GROUP) @binding(0) var<uniform> sky: Sky;
@@ -85,5 +88,5 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
         let cloud = lit * (1.0 - 0.35 * thickness) + sky.sun_color.rgb * pow(s, 8.0) * 0.4 * day;
         color = mix(color, cloud, cover * 0.85);
     }
-    return vec4(color, 1.0);
+    return vec4(mix(color, sky.cave.rgb, sky.cave.w), 1.0);
 }

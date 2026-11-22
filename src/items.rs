@@ -57,6 +57,18 @@ pub enum Item {
     CookedPorkchop,
     Chicken,
     CookedChicken,
+    Glue,
+    Brace,
+    Activator,
+    Shardstone,
+    Core,
+    Rift,
+    Bow,
+    Arrow,
+    Bone,
+    Thread,
+    Feather,
+    Heart,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -146,11 +158,23 @@ impl Item {
             Item::CookedPorkchop => "Жареная свинина",
             Item::Chicken => "Сырая курица",
             Item::CookedChicken => "Жареная курица",
+            Item::Glue => "Клей",
+            Item::Brace => "Скоба",
+            Item::Activator => "Физический активатор",
+            Item::Shardstone => "Осколочный камень",
+            Item::Core => "Ядро осколка",
+            Item::Rift => "Разлом",
+            Item::Bow => "Лук",
+            Item::Arrow => "Стрела",
+            Item::Bone => "Кость",
+            Item::Thread => "Нить",
+            Item::Feather => "Перо",
+            Item::Heart => "Сердце Осколков",
         }
     }
 
     pub fn max_stack(self) -> u32 {
-        if self.tool().is_some() { 1 } else { 999 }
+        if self.tool().is_some() || matches!(self, Item::Bow | Item::Heart) { 1 } else { 999 }
     }
 
     pub fn tool(self) -> Option<Tool> {
@@ -200,6 +224,10 @@ impl Item {
             Item::Clay => Some(Material::Clay),
             Item::Ice => Some(Material::Ice),
             Item::Cactus => Some(Material::Cactus),
+            Item::Brace => Some(Material::Brace),
+            Item::Activator => Some(Material::Activator),
+            Item::Shardstone => Some(Material::Shardstone),
+            Item::Rift => Some(Material::Rift),
             _ => None,
         }
     }
@@ -225,11 +253,17 @@ impl Item {
             Material::Clay => Some(Item::Clay),
             Material::Ice => Some(Item::Ice),
             Material::Cactus => Some(Item::Cactus),
+            Material::Brace => Some(Item::Brace),
+            Material::Activator => Some(Item::Activator),
+            Material::Shardstone => Some(Item::Shardstone),
+            Material::Core => pickaxe.is_some_and(|t| t >= 2).then_some(Item::Core),
+            Material::Rift => Some(Item::Rift),
+            Material::Cache | Material::Altar => None,
         }
     }
 
     /// Every item, for the creative catalogue and commands.
-    pub const ALL: [Item; 52] = [
+    pub const ALL: [Item; 64] = [
         Item::Dirt,
         Item::Stone,
         Item::Sand,
@@ -252,6 +286,12 @@ impl Item {
         Item::CraftingTable,
         Item::Furnace,
         Item::Chest,
+        Item::Glue,
+        Item::Brace,
+        Item::Activator,
+        Item::Rift,
+        Item::Shardstone,
+        Item::Core,
         Item::Torch,
         Item::Bed,
         Item::WoodenPickaxe,
@@ -270,6 +310,8 @@ impl Item {
         Item::DiamondShovel,
         Item::DiamondAxe,
         Item::DiamondSword,
+        Item::Bow,
+        Item::Arrow,
         Item::Mutton,
         Item::CookedMutton,
         Item::Beef,
@@ -279,9 +321,13 @@ impl Item {
         Item::Chicken,
         Item::CookedChicken,
         Item::Wool,
+        Item::Thread,
+        Item::Feather,
+        Item::Bone,
         Item::Seeds,
         Item::Wheat,
         Item::Bread,
+        Item::Heart,
     ];
 
     /// Name used by console commands.

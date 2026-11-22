@@ -14,6 +14,7 @@ const TEXTURE_SPAN: f32 = 2.0;
 const DIRT_LAYER: i32 = 1;
 const COAL: vec3<f32> = vec3(0.012, 0.012, 0.014);
 const DIAMOND: vec3<f32> = vec3(0.25, 0.85, 0.9);
+const GLOW: vec3<f32> = vec3(0.6, 2.4, 3.0);
 const IRON: vec3<f32> = vec3(0.45, 0.20, 0.09);
 
 fn hash(p: vec3<i32>) -> f32 {
@@ -125,6 +126,10 @@ fn fragment(in: VertexOutput, @builtin(front_facing) is_front: bool) -> Fragment
         let fleck = step(0.6, noise(p * 6.0));
         let ore = select(select(COAL, IRON, code > 1.5), DIAMOND, code > 2.5);
         color = mix(color, ore, fleck * 0.85);
+        // Shard cores and rifts glow from within.
+        if code > 3.5 {
+            pbr_input.material.emissive = vec4(GLOW * (0.15 + fleck), 1.0);
+        }
     }
     pbr_input.material.base_color = vec4(color, 1.0);
     pbr_input.material.perceptual_roughness = mix(rough_ao.r, 0.9, far);

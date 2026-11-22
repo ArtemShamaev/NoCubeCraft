@@ -57,6 +57,8 @@ pub enum Sfx {
     Inventory,
     Splash,
     Click,
+    Bow,
+    Rattle,
 }
 
 impl Sfx {
@@ -85,7 +87,7 @@ impl Sfx {
             Sfx::ChestClose => vec!["sounds/doorClose_1.ogg".into()],
             Sfx::Page => vec!["sounds/bookFlip1.ogg".into()],
             Sfx::Inventory => vec!["sounds/cloth1.ogg".into()],
-            Sfx::Splash | Sfx::Click => Vec::new(),
+            Sfx::Splash | Sfx::Click | Sfx::Bow | Sfx::Rattle => Vec::new(),
         }
     }
 }
@@ -137,7 +139,7 @@ fn setup(mut commands: Commands, server: Res<AssetServer>, mut sources: ResMut<A
     });
 }
 
-const ALL: [Sfx; 21] = [
+const ALL: [Sfx; 23] = [
     Sfx::DigSoft,
     Sfx::DigStone,
     Sfx::DigWood,
@@ -159,6 +161,8 @@ const ALL: [Sfx; 21] = [
     Sfx::Inventory,
     Sfx::Splash,
     Sfx::Click,
+    Sfx::Bow,
+    Sfx::Rattle,
 ];
 
 fn add_listener(mut commands: Commands, cameras: Query<Entity, (With<PlayerCamera>, Without<SpatialListener>)>) {
@@ -285,6 +289,7 @@ fn creatures(
                 MobKind::Pig => Sfx::Oink,
                 MobKind::Wolf => Sfx::Growl,
                 MobKind::Spider => Sfx::Hiss,
+                MobKind::Skeleton | MobKind::Warden => Sfx::Rattle,
                 MobKind::Cow | MobKind::Chicken => continue,
             };
             sounds.write(PlaySound::at(sfx, transform.translation + Vec3::Y));
@@ -351,6 +356,16 @@ fn synthesize(sfx: Sfx, seed: u32) -> Vec<f32> {
         Sfx::Splash => render(0.5, |t| {
             let raw = rng.noise();
             (raw - lp.run(raw, 0.3)) * 1.2 * (t * 80.0).min(1.0) * (-t * 7.0).exp()
+        }),
+        // A plucked string: a falling twang with a breath of air.
+        Sfx::Bow => render(0.35, |t| {
+            let pitch = 180.0 + seed as f32 * 12.0 - t * 120.0;
+            (sine(pitch, t) * 0.6 + lp.run(rng.noise(), 0.2) * 0.3) * (t * 400.0).min(1.0) * (-t * 11.0).exp()
+        }),
+        // Bones knocking together: a few hollow clicks.
+        Sfx::Rattle => render(0.45, |t| {
+            let click = (t * 14.0 + seed as f32 * 0.3).fract();
+            (sine(900.0, t) * 0.4 + rng.noise() * 0.6) * (-click * 60.0).exp() * (-t * 3.0).exp() * 0.7
         }),
         _ => render(0.03, |t| sine(1200.0 + seed as f32 * 60.0, t) * (-t * 160.0).exp() * 0.5),
     }

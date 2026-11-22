@@ -11,9 +11,10 @@ use bevy::{
 use crate::{
     AppState, Creative, Mode,
     body::{Body, MoveBodies},
+    hud::Toast,
     save::LoadWorld,
     settings::Settings,
-    terrain::{Terrain, TerrainAnchor},
+    terrain::{SHARDS_BELOW, SHARDS_Y, Terrain, TerrainAnchor},
 };
 
 pub const RADIUS: f32 = 0.35;
@@ -38,7 +39,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnExit(Mode::Playing), release_cursor)
             .add_systems(Update, (grab_on_click, pause).run_if(in_state(Mode::Playing)))
             .add_systems(Update, (look, steer).chain().before(MoveBodies).run_if(in_state(AppState::Game)))
-            .add_systems(Update, wait_for_ground.after(MoveBodies).run_if(in_state(AppState::Game)));
+            .add_systems(Update, (wait_for_ground, fall_out).after(MoveBodies).run_if(in_state(AppState::Game)));
     }
 }
 
@@ -85,7 +86,8 @@ fn spawn(mut commands: Commands, start: Res<PlayerStart>, settings: Res<Settings
             Msaa::Off,
             Fxaa::default(),
             bevy::light::ShadowFilteringMethod::Hardware2x2,
-            Projection::Perspective(PerspectiveProjection { fov: settings.fov.to_radians(), ..default() }),
+            // A near plane well inside the body, so the view never pokes into a wall.
+            Projection::Perspective(PerspectiveProjection { fov: settings.fov.to_radians(), near: 0.05, ..default() }),
             Transform::from_xyz(0.0, EYE_HEIGHT, 0.0),
         ));
 }
@@ -102,6 +104,30 @@ fn wait_for_ground(
     let (entity, transform) = player.into_inner();
     if terrain.is_ready_around(transform.translation) {
         commands.entity(entity).remove::<Spawning>().insert(body());
+    }
+}
+
+pub fn in_shards(p: Vec3) -> bool {
+    p.y > SHARDS_Y - SHARDS_BELOW - 200.0
+}
+
+/// Moves the player elsewhere; they hover there until the ground under them is ready.
+pub fn teleport(commands: &mut Commands, player: Entity, transform: &mut Transform, to: Vec3) {
+    transform.translation = to;
+    commands.entity(player).remove::<Body>().insert(Spawning);
+}
+
+/// Falling off the Shards ends back home rather than in the void.
+fn fall_out(
+    mut commands: Commands,
+    mut toast: ResMut<Toast>,
+    player: Single<(Entity, &Player, &mut Transform), With<Body>>,
+) {
+    let (entity, player, mut transform) = player.into_inner();
+    if in_shards(transform.translation) && transform.translation.y < SHARDS_Y - SHARDS_BELOW - 60.0 {
+        let home = player.spawn;
+        teleport(&mut commands, entity, &mut transform, home);
+        toast.show("Пустота выбросила вас домой".into());
     }
 }
 

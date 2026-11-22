@@ -9,16 +9,17 @@ use crate::{
     building::{self, BlockSize, BuildTool},
     containers::{ChestState, FurnaceState, OpenContainer},
     effects::Debris,
-    falling::Removed,
+    falling::{Activate, Removed},
+    goals::ALTAR_CORES,
     hud::{Progress, Toast},
     items::{HOTBAR, Inventory, Item, PropKind, Tool, ToolKind},
-    mobs::Mob,
+    mobs::{Mob, MobKind, Summon, rand01},
     player::{self, Player, PlayerCamera},
     props::{self, Crop, Prop, PropAssets},
     sky::TimeOfDay,
     sound::{PlaySound, Sfx},
     survival::Vitals,
-    terrain::{Block, CELL, Material, Shape, Terrain, TerrainChunk},
+    terrain::{ALTAR, Block, CELL, Material, SHARDS_Y, Shape, Terrain, TerrainChunk},
 };
 
 const REACH: f32 = 5.0;
@@ -143,9 +144,14 @@ fn dig_seconds(material: Material) -> f32 {
         Material::Grass | Material::Dirt | Material::Sand | Material::Snow | Material::Gravel | Material::Clay => 0.012,
         Material::Cactus => 0.02,
         Material::Ice | Material::Sandstone => 0.06,
-        Material::Wood | Material::Planks => 0.04,
+        Material::Wood | Material::Planks | Material::Brace | Material::Cache => 0.04,
+        Material::Activator => 0.08,
         Material::Stone | Material::Bricks | Material::CoalOre | Material::IronOre => 0.12,
-        Material::DiamondOre => 0.2,
+        Material::DiamondOre | Material::Core => 0.2,
+        Material::Shardstone => 0.1,
+        Material::Rift => 0.3,
+        // Never dug: see `primary`.
+        Material::Altar => 1.0,
     }
 }
 
@@ -157,8 +163,15 @@ fn tool_for(material: Material) -> ToolKind {
         | Material::IronOre
         | Material::DiamondOre
         | Material::Sandstone
-        | Material::Ice => ToolKind::Pickaxe,
-        Material::Wood | Material::Planks | Material::Leaves | Material::Cactus => ToolKind::Axe,
+        | Material::Ice
+        | Material::Activator
+        | Material::Shardstone
+        | Material::Core
+        | Material::Rift
+        | Material::Altar => ToolKind::Pickaxe,
+        Material::Wood | Material::Planks | Material::Leaves | Material::Cactus | Material::Brace | Material::Cache => {
+            ToolKind::Axe
+        }
         _ => ToolKind::Shovel,
     }
 }
@@ -310,7 +323,12 @@ fn primary(
         }
         Target::Block { cell, .. } => {
             let size = tool_settings.size;
-            let region = dig_region(&terrain, cell, size);
+            let mut region = dig_region(&terrain, cell, size);
+            // The altar stays, whatever is done to it.
+            region.retain(|(_, b)| b.material != Material::Altar);
+            if region.is_empty() {
+                return;
+            }
             let key = (building::dig_origin(cell, size.cells()), size, None);
             if work.key != Some(key) {
                 *work = Work { key: Some(key), done: 0.0, repeat: work.repeat };
@@ -349,13 +367,14 @@ fn dig(
     terrain.set_blocks(region.iter().map(|(c, _)| (*c, Block::AIR)));
     let pickaxe = tool.filter(|t| t.kind == ToolKind::Pickaxe).map(|t| t.tier);
     let mut counts: Vec<(Item, u32)> = Vec::new();
-    let mut add = |item: Item| match counts.iter_mut().find(|(i, _)| *i == item) {
-        Some((_, n)) => *n += 1,
-        None => counts.push((item, 1)),
+    let mut add_n = |item: Item, count: u32| match counts.iter_mut().find(|(i, _)| *i == item) {
+        Some((_, n)) => *n += count,
+        None => counts.push((item, count)),
     };
     let mut used_tool = 0;
     let mut lost_ore = None;
     for (cell, block) in region {
+        let mut add = |item: Item| add_n(item, 1);
         match Item::mined(block.material, pickaxe) {
             Some(item) => add(item),
             None => {
@@ -371,6 +390,10 @@ fn dig(
         if block.material == Material::Leaves && roll < STICK_CHANCE {
             add(Item::Stick);
         }
+        if block.material == Material::Cache {
+            let (item, count) = loot(roll);
+            add_n(item, count);
+        }
         if tool.is_some_and(|t| t.kind == tool_for(block.material)) {
             used_tool += 1;
         }
@@ -382,6 +405,20 @@ fn dig(
         None => {}
     }
     give(inventory, toast, &counts);
+}
+
+/// What one cell of a ruin's cache holds.
+fn loot(roll: f32) -> (Item, u32) {
+    const TABLE: [(f32, Item, u32); 7] = [
+        (0.28, Item::Arrow, 4),
+        (0.46, Item::IronIngot, 2),
+        (0.60, Item::Bone, 2),
+        (0.70, Item::Diamond, 1),
+        (0.78, Item::Bow, 1),
+        (0.90, Item::Bread, 2),
+        (1.00, Item::Coal, 4),
+    ];
+    TABLE.iter().find(|(p, ..)| roll < *p).map_or((Item::Coal, 1), |&(_, item, n)| (item, n))
 }
 
 /// A repeatable pseudo-random number in [0, 1) for a cell.
@@ -445,15 +482,20 @@ fn secondary(
     aim: Res<Aim>,
     (tool, creative): (Res<BuildTool>, Res<Creative>),
     camera: Single<&GlobalTransform, With<PlayerCamera>>,
-    player: Single<(&mut Player, &Transform), With<Body>>,
+    player: Single<(Entity, &mut Player, &mut Transform), With<Body>>,
     mut terrain: ResMut<Terrain>,
     mut inventory: ResMut<Inventory>,
     (mut vitals, mut toast): (ResMut<Vitals>, ResMut<Toast>),
     (mut time_of_day, mut mode, mut open): (ResMut<TimeOfDay>, ResMut<NextState<Mode>>, ResMut<OpenContainer>),
     prop_assets: Res<PropAssets>,
     props: Query<&Prop>,
-    mobs: Query<(&Mob, &Transform), Without<Player>>,
-    (mut repeat, mut sounds): (Local<f32>, MessageWriter<PlaySound>),
+    mut mobs: Query<(&mut Mob, &Transform), Without<Player>>,
+    (mut repeat, mut sounds, mut activate, mut summons): (
+        Local<f32>,
+        MessageWriter<PlaySound>,
+        MessageWriter<Activate>,
+        MessageWriter<Summon>,
+    ),
 ) {
     *repeat -= time.delta_secs();
     let pressed = mouse.just_pressed(MouseButton::Right);
@@ -461,7 +503,7 @@ fn secondary(
         *repeat = 0.0;
         return;
     }
-    let (mut player, transform) = player.into_inner();
+    let (entity, mut player, mut transform) = player.into_inner();
     let feet = transform.translation;
     let selected = inventory.selected();
 
@@ -484,9 +526,7 @@ fn secondary(
                     player.spawn = feet;
                     if !time_of_day.is_night() {
                         toast.show("Точка возрождения сохранена. Спать можно только ночью".into());
-                    } else if mobs
-                        .iter()
-                        .any(|(m, t)| m.kind.hostile() && t.translation.distance(feet) < SLEEP_SAFE_RADIUS)
+                    } else if mobs.iter().any(|(m, t)| m.hostile() && t.translation.distance(feet) < SLEEP_SAFE_RADIUS)
                     {
                         toast.show("Рядом зомби, уснуть не получится".into());
                     } else {
@@ -499,7 +539,78 @@ fn secondary(
             }
         }
 
+        // Bones win wolves over; a dog sits or follows when clicked.
+        if let Target::Entity { entity, .. } = aim.0
+            && let Ok((mut mob, _)) = mobs.get_mut(entity)
+        {
+            if mob.tame {
+                mob.sitting = !mob.sitting;
+                toast.show(if mob.sitting { "Пёс сидит" } else { "Пёс идёт за вами" }.into());
+                return;
+            }
+            if mob.kind == MobKind::Wolf && selected.is_some_and(|s| s.item == Item::Bone) {
+                if !creative.0 {
+                    inventory.consume_selected(1);
+                }
+                let roll = rand01(entity.to_bits() as u32 ^ (time.elapsed_secs() * 1000.0) as u32);
+                toast.show(if mob.tame_with_bone(roll) {
+                    "Волк приручён! Теперь это ваш пёс".into()
+                } else {
+                    "Волк не доверяет вам. Ещё кость?".into()
+                });
+                return;
+            }
+        }
+
+        if let Target::Block { cell, .. } = aim.0 {
+            match terrain.block(cell).material {
+                Material::Altar => {
+                    if mobs.iter().any(|(m, _)| m.kind == MobKind::Warden && m.alive()) {
+                        toast.show("Страж уже здесь".into());
+                    } else if !creative.0 && !inventory.remove(Item::Core, ALTAR_CORES) {
+                        toast.show(format!("Алтарю нужно {ALTAR_CORES} ядер осколка"));
+                    } else {
+                        // Beyond the altar, as seen from the way here.
+                        let at = Vec3::new(ALTAR.x, SHARDS_Y + 3.1, ALTAR.y - 5.0);
+                        summons.write(Summon { kind: MobKind::Warden, at, yaw: std::f32::consts::PI });
+                        sounds.write(PlaySound::at(Sfx::Rattle, at));
+                        toast.show("Страж Осколков пробудился!".into());
+                    }
+                    return;
+                }
+                Material::Activator => {
+                    activate.write(Activate { cell, from: feet });
+                    return;
+                }
+                Material::Rift => {
+                    let (to, message) = if player::in_shards(feet) {
+                        (player.spawn, "Разлом вернул вас домой")
+                    } else {
+                        (terrain.shards_arrival(), "Осколки. Под ногами — пустота")
+                    };
+                    player::teleport(&mut commands, entity, &mut transform, to);
+                    sounds.write(PlaySound::ui(Sfx::Place));
+                    toast.show(message.into());
+                    return;
+                }
+                _ => {}
+            }
+        }
+
         let Some(stack) = selected else { return };
+        if stack.item == Item::Glue {
+            // Glue smears over a whole block-sized region; on glued blocks it wipes off.
+            let Target::Block { cell, .. } = aim.0 else { return };
+            let glue = !terrain.block(cell).glued;
+            let region = dig_region(&terrain, cell, tool.size);
+            let at = (cell.as_vec3() + 0.5) * CELL;
+            terrain.set_blocks(region.into_iter().map(|(c, b)| (c, Block { glued: glue, ..b })));
+            sounds.write(PlaySound::at(Sfx::DigSoft, at));
+            if glue && !creative.0 {
+                inventory.consume_selected(1);
+            }
+            return;
+        }
         if let Some((hunger, health)) = stack.item.food() {
             if vitals.eat(hunger, health) {
                 inventory.consume_selected(1);

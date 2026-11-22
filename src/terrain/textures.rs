@@ -57,17 +57,22 @@ pub fn layer(material: Material) -> u32 {
     match material {
         Material::Air | Material::Grass => 0,
         Material::Dirt => DIRT_LAYER,
-        Material::Stone | Material::CoalOre | Material::IronOre | Material::DiamondOre => 2,
+        Material::Stone
+        | Material::CoalOre
+        | Material::IronOre
+        | Material::DiamondOre
+        | Material::Shardstone
+        | Material::Core => 2,
         Material::Sand => 3,
-        Material::Planks => 4,
+        Material::Planks | Material::Brace | Material::Cache => 4,
         Material::Wood => 5,
         Material::Leaves => 6,
         Material::Snow => 7,
-        Material::Bricks => 8,
+        Material::Bricks | Material::Activator | Material::Altar => 8,
         Material::Sandstone => SANDSTONE_LAYER,
         Material::Gravel => 10,
         Material::Clay => 11,
-        Material::Ice => 12,
+        Material::Ice | Material::Rift => 12,
         Material::Cactus => 13,
     }
 }

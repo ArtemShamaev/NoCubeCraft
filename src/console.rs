@@ -129,7 +129,7 @@ fn recall(keys: Res<ButtonInput<KeyCode>>, mut log: ResMut<ConsoleLog>, mut fiel
 #[derive(bevy::ecs::system::SystemParam)]
 struct World<'w, 's> {
     creative: ResMut<'w, Creative>,
-    current: ResMut<'w, CurrentWorld>,
+    current: Option<ResMut<'w, CurrentWorld>>,
     inventory: ResMut<'w, Inventory>,
     vitals: ResMut<'w, Vitals>,
     time_of_day: ResMut<'w, TimeOfDay>,
@@ -152,7 +152,7 @@ fn run(In(line): In<String>, mut world: World) {
 
 const HELP: &str = "help · gamemode creative|survival · give <предмет> [кол-во] · items
 time set day|night|noon|midnight|0..1 · tp <x> <y> <z> · tp spawn
-heal · feed · kill · clear · seed · summon <моб> · locate [altar]";
+heal · feed · kill · clear · seed · summon <моб> · locate [village|altar]";
 
 fn execute(line: &str, w: &mut World) -> String {
     let words: Vec<&str> = line.split_whitespace().collect();
@@ -164,11 +164,14 @@ fn execute(line: &str, w: &mut World) -> String {
                 "survival" | "s" | "0" | "выживание" => false,
                 _ => return "Режимы: creative, survival".into(),
             };
+            let Some(current) = &mut w.current else {
+                return "В чужом мире режим выбирает хозяин".into();
+            };
+            current.info.creative = creative;
+            current.touch();
             w.creative.0 = creative;
-            w.current.info.creative = creative;
-            w.current.touch();
             if creative {
-                "Творческий режим: двойной пробел — полёт, Ctrl — вниз"
+                "Творческий режим: двойной пробел — полёт, Shift — вниз"
             } else {
                 "Режим выживания"
             }
@@ -238,6 +241,16 @@ fn execute(line: &str, w: &mut World) -> String {
         ["clear"] => {
             *w.inventory = Inventory::default();
             "Инвентарь очищен".into()
+        }
+        ["locate" | "найти", "village" | "деревня"] => {
+            let at = w.player.1.translation;
+            let nearest = crate::villages::sites_near(&w.terrain, at, 800.0)
+                .into_iter()
+                .min_by(|a, b| a.1.distance(at).total_cmp(&b.1.distance(at)));
+            match nearest {
+                Some((_, p)) => format!("Деревня: {:.0} {:.0} {:.0}, {:.0} м", p.x, p.y + 1.0, p.z, p.distance(at)),
+                None => "Поблизости деревень нет".into(),
+            }
         }
         ["locate" | "найти", "altar" | "алтарь"] => {
             let at = w.player.1.translation;

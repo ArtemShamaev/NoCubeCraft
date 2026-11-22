@@ -1,6 +1,6 @@
 //! Deterministic world: height map, shaped surface cells, caves, ores, trees and ruins.
 
-use bevy::math::{IVec2, IVec3, Vec3};
+use bevy::math::{IVec2, IVec3, Vec3, Vec3Swizzles};
 use noise::{Fbm, MultiFractal, NoiseFn, Perlin, RidgedMulti};
 
 use super::{
@@ -207,6 +207,18 @@ impl Generator {
         self.plant_trees(&mut out, min, cell, n);
         self.build_structures(&mut out, min, cell, n);
         out
+    }
+
+    /// Where the trees (not cacti) grow within `radius` of `center`, at their trunks' feet.
+    pub fn trees_near(&self, center: Vec3, radius: f32) -> Vec<Vec3> {
+        let lo = ((center.xz() - radius) / TREE_CELL as f32).floor().as_ivec2();
+        let hi = ((center.xz() + radius) / TREE_CELL as f32).floor().as_ivec2();
+        (lo.y..=hi.y)
+            .flat_map(|z| (lo.x..=hi.x).map(move |x| IVec2::new(x, z)))
+            .filter_map(|id| self.tree_at(id))
+            .filter(|t| t.kind != TreeKind::Cactus && t.base.xz().distance(center.xz()) < radius)
+            .map(|t| t.base)
+            .collect()
     }
 
     fn tree_at(&self, id: IVec2) -> Option<Tree> {

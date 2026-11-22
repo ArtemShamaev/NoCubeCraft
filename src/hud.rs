@@ -7,7 +7,7 @@ use crate::{
     AppState,
     building::BuildTool,
     containers::{SlotRef, Slots},
-    icons::ItemIcons,
+    icons::{ItemIcons, VitalIcons},
     items::{HOTBAR, Inventory},
     player::Player,
     save::LoadWorld,
@@ -86,10 +86,11 @@ struct ProgressBar;
 #[derive(Component)]
 struct HurtOverlay;
 
+/// One of the ten hearts (or drumsticks) in the row; each stands for two points.
 #[derive(Component)]
-enum VitalBar {
-    Health,
-    Hunger,
+enum VitalIcon {
+    Health(usize),
+    Hunger(usize),
 }
 
 /// Shows one slot: of the inventory, the crafting grid, a furnace or a chest.
@@ -237,28 +238,24 @@ fn spawn(mut commands: Commands) {
         ChildOf(column),
     ));
 
-    let vitals = commands.spawn((Node { column_gap: px(16), ..default() }, ChildOf(column))).id();
-    for (kind, color) in
-        [(VitalBar::Health, Color::srgb(0.85, 0.2, 0.18)), (VitalBar::Hunger, Color::srgb(0.85, 0.6, 0.2))]
-    {
-        commands
-            .spawn((
-                Node {
-                    width: px(SLOT_SIZE * 4.5 - 8.0),
-                    height: px(10),
-                    border: UiRect::all(px(1)),
-                    border_radius: BorderRadius::all(px(4)),
-                    ..default()
-                },
-                BackgroundColor(Color::srgba(0.0, 0.0, 0.0, 0.5)),
-                BorderColor::all(Color::srgba(1.0, 1.0, 1.0, 0.2)),
-                ChildOf(vitals),
-            ))
-            .with_child((
-                kind,
-                Node { height: percent(100), border_radius: BorderRadius::all(px(3)), ..default() },
-                BackgroundColor(color),
+    // Hearts on the left, food on the right, over the hotbar.
+    let vitals = commands
+        .spawn((
+            Node { width: px(SLOT_SIZE * 9.0 + 32.0), justify_content: JustifyContent::SpaceBetween, ..default() },
+            ChildOf(column),
+        ))
+        .id();
+    for hunger in [false, true] {
+        let row = commands.spawn((Node { column_gap: px(1), ..default() }, ChildOf(vitals))).id();
+        for i in 0..10 {
+            let icon = if hunger { VitalIcon::Hunger(9 - i) } else { VitalIcon::Health(i) };
+            commands.spawn((
+                icon,
+                ImageNode::default(),
+                Node { width: px(20), height: px(20), ..default() },
+                ChildOf(row),
             ));
+        }
     }
 
     let hotbar = commands.spawn((Node { column_gap: px(4), ..default() }, ChildOf(column))).id();
@@ -317,16 +314,16 @@ fn update_slots(
     }
 }
 
-fn update_vitals(vitals: Res<Vitals>, mut bars: Query<(&VitalBar, &mut Node)>) {
-    if !vitals.is_changed() {
-        return;
-    }
-    for (bar, mut node) in &mut bars {
-        let fraction = match bar {
-            VitalBar::Health => vitals.health / MAX_HEALTH,
-            VitalBar::Hunger => vitals.hunger / MAX_HUNGER,
+fn update_vitals(vitals: Res<Vitals>, looks: Res<VitalIcons>, mut icons: Query<(&VitalIcon, &mut ImageNode)>) {
+    for (icon, mut image) in &mut icons {
+        let (value, i, set) = match icon {
+            VitalIcon::Health(i) => (vitals.health / MAX_HEALTH * 20.0, *i, &looks.heart),
+            VitalIcon::Hunger(i) => (vitals.hunger / MAX_HUNGER * 20.0, *i, &looks.food),
         };
-        node.width = percent(fraction * 100.0);
+        let points = (value.ceil() as i32 - 2 * i as i32).clamp(0, 2) as usize;
+        if image.image != set[points] {
+            image.image = set[points].clone();
+        }
     }
 }
 

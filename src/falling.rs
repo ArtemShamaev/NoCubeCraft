@@ -7,6 +7,8 @@ use std::collections::{HashSet, VecDeque};
 
 use avian3d::prelude::*;
 use bevy::prelude::*;
+use bevy_replicon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState,
@@ -32,10 +34,17 @@ pub struct FallingPlugin;
 
 impl Plugin for FallingPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Removed>().add_message::<Activate>().add_systems(
-            Update,
-            (activate, check_support, release, crash, settle).chain().run_if(in_state(AppState::Game)),
-        );
+        app.add_message::<Removed>()
+            .add_client_message::<Activate>(Channel::Ordered)
+            .replicate::<PieceLook>()
+            .add_observer(show_piece)
+            .add_systems(
+                Update,
+                (activate, check_support, release, crash, settle)
+                    .chain()
+                    .run_if(in_state(AppState::Game))
+                    .run_if(crate::net::authority),
+            );
     }
 }
 
@@ -47,10 +56,29 @@ pub struct Removed {
 }
 
 /// A physics activator was used: its structure comes loose as one body.
-#[derive(Message, Clone)]
+#[derive(Message, Clone, Serialize, Deserialize)]
 pub struct Activate {
     pub cell: IVec3,
     pub from: Vec3,
+}
+
+/// What a falling piece looks like, for guests: its blocks, as in [`Piece::cells`].
+#[derive(Component, Serialize, Deserialize)]
+struct PieceLook(Vec<(IVec3, u16)>);
+
+/// A guest's copy of a falling piece gets its mesh here; the host's already has one.
+fn show_piece(
+    add: On<Add<PieceLook>>,
+    mut commands: Commands,
+    pieces: Query<&PieceLook, Without<Mesh3d>>,
+    assets: Res<TerrainAssets>,
+    mut meshes: ResMut<Assets<Mesh>>,
+) {
+    let Ok(look) = pieces.get(add.entity) else { return };
+    let cells: Vec<_> = look.0.iter().filter_map(|(c, bits)| Some((*c, Block::from_bits(*bits)?))).collect();
+    if let Some((mesh, _)) = mesh_blocks(&cells) {
+        commands.entity(add.entity).insert((Mesh3d(meshes.add(mesh)), MeshMaterial3d(assets.material.clone())));
+    }
 }
 
 #[derive(Component)]
@@ -249,6 +277,8 @@ fn loosen(
     terrain.set_blocks(cells.iter().map(|(c, _)| (*c, Block::AIR)));
     let mut piece = commands.spawn((
         DespawnOnExit(AppState::Game),
+        Replicated,
+        PieceLook(local.iter().map(|(c, b)| (*c, b.to_bits())).collect()),
         Piece { cells: local, launch: Some(launch), age: 0.0, resting: 0.0, base: lo.y },
         RigidBody::Static,
         collider,
@@ -267,7 +297,7 @@ fn loosen(
 /// An activated structure comes loose; whatever it held up may fall in turn.
 fn activate(
     mut commands: Commands,
-    mut events: MessageReader<Activate>,
+    mut events: MessageReader<FromClient<Activate>>,
     mut terrain: ResMut<Terrain>,
     assets: Res<TerrainAssets>,
     mut meshes: ResMut<Assets<Mesh>>,
@@ -275,6 +305,7 @@ fn activate(
     mut sounds: MessageWriter<PlaySound>,
 ) {
     for event in events.read() {
+        let event = &event.message;
         let Some(cells) = structure(&terrain, event.cell) else { continue };
         if loosen(&mut commands, &mut terrain, &mut meshes, &assets, &cells, (Vec3::ZERO, Vec3::ZERO), false) {
             sounds.write(PlaySound::at(Sfx::Place, (event.cell.as_vec3() + 0.5) * CELL));

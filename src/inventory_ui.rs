@@ -5,11 +5,12 @@ use bevy::{picking::pointer::PointerButton, prelude::*, window::PrimaryWindow};
 
 use crate::{
     Creative, Mode,
-    containers::{CHEST_SLOTS, CraftGrid, OpenContainer, SlotRef, Slots, SlotsMut},
+    containers::{CHEST_SLOTS, CraftGrid, Fill, OpenContainer, SlotRef, Slots, SlotsMut},
     crafting::{self, Recipe},
     hud::{SLOT_SIZE, SlotView, Toast, spawn_slot},
     icons::ItemIcons,
     items::{HOTBAR, Inventory, Item, SLOTS, Stack},
+    props::Peek,
     sound::{PlaySound, Sfx},
 };
 
@@ -66,13 +67,23 @@ fn close(keys: Res<ButtonInput<KeyCode>>, mut mode: ResMut<NextState<Mode>>) {
     }
 }
 
-fn prepare_grid(container: Res<OpenContainer>, mut grid: ResMut<CraftGrid>, mut sounds: MessageWriter<PlaySound>) {
+fn prepare_grid(
+    container: Res<OpenContainer>,
+    mut grid: ResMut<CraftGrid>,
+    mut sounds: MessageWriter<PlaySound>,
+    mut peeks: MessageWriter<Peek>,
+) {
     let width = if *container == OpenContainer::Workbench { 3 } else { 2 };
     *grid = CraftGrid { width, slots: vec![None; width * width] };
-    sounds.write(PlaySound::ui(match *container {
-        OpenContainer::Chest(_) => Sfx::ChestOpen,
-        _ => Sfx::Inventory,
-    }));
+    // A chest's lid makes its own sound, for everyone around.
+    match *container {
+        OpenContainer::Chest(chest) => {
+            peeks.write(Peek { chest, open: true });
+        }
+        _ => {
+            sounds.write(PlaySound::ui(Sfx::Inventory));
+        }
+    }
 }
 
 /// Puts everything held or left on the grid back into the inventory.
@@ -82,7 +93,7 @@ fn close_screen(
     mut grid: ResMut<CraftGrid>,
     mut container: ResMut<OpenContainer>,
     mut toast: ResMut<Toast>,
-    mut sounds: MessageWriter<PlaySound>,
+    mut peeks: MessageWriter<Peek>,
 ) {
     let leftovers: Vec<Stack> =
         held.0.take().into_iter().chain(grid.slots.iter_mut().filter_map(Option::take)).collect();
@@ -90,8 +101,8 @@ fn close_screen(
     if lost > 0 {
         toast.show("Инвентарь полон: часть предметов потеряна".into());
     }
-    if matches!(*container, OpenContainer::Chest(_)) {
-        sounds.write(PlaySound::ui(Sfx::ChestClose));
+    if let OpenContainer::Chest(chest) = *container {
+        peeks.write(Peek { chest, open: false });
     }
     *container = OpenContainer::None;
 }
@@ -360,19 +371,35 @@ fn press_slot(
     mut slots: SlotsMut,
     mut held: ResMut<Held>,
     mut sounds: MessageWriter<PlaySound>,
+    mut fills: MessageWriter<Fill>,
 ) {
     let Ok(view) = views.get(press.event_target()) else { return };
+    // Whatever happens to an open furnace or chest is passed on.
+    press_slot_inner(view, &keys, &mut slots, &mut held, &mut sounds, press.button);
+    if let Some(fill) = slots.fill() {
+        fills.write(fill);
+    }
+}
+
+fn press_slot_inner(
+    view: &SlotView,
+    keys: &ButtonInput<KeyCode>,
+    slots: &mut SlotsMut,
+    held: &mut Held,
+    sounds: &mut MessageWriter<PlaySound>,
+    button: PointerButton,
+) {
     let shift = keys.pressed(KeyCode::ShiftLeft) || keys.pressed(KeyCode::ShiftRight);
-    let primary = press.button == PointerButton::Primary;
+    let primary = button == PointerButton::Primary;
     match view.source {
         SlotRef::Result => {
-            if primary && take_result(&mut slots, &mut held.0, shift) {
+            if primary && take_result(slots, &mut held.0, shift) {
                 sounds.write(PlaySound { volume: 0.6, ..PlaySound::ui(Sfx::Click) });
             }
         }
         // Smelted items can only be taken out.
-        SlotRef::FurnaceOutput => take_output(&mut slots, &mut held.0, shift),
-        source if shift && primary => quick_move(&mut slots, source),
+        SlotRef::FurnaceOutput => take_output(slots, &mut held.0, shift),
+        source if shift && primary => quick_move(slots, source),
         source => {
             let Some(cell) = slots.slot(source) else { return };
             let (slot, hand) = if primary { move_all(*cell, held.0) } else { move_some(*cell, held.0) };

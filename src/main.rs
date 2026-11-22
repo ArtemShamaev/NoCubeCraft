@@ -2,12 +2,15 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 mod archery;
+mod avatars;
+mod beds;
 mod body;
 mod building;
 mod console;
 mod containers;
 mod crafting;
 mod credits;
+mod drops;
 mod effects;
 mod embedded;
 mod falling;
@@ -18,8 +21,10 @@ mod icons;
 mod interaction;
 mod inventory_ui;
 mod items;
+mod lobby;
 mod menus;
 mod mobs;
+mod net;
 mod player;
 mod props;
 mod save;
@@ -28,7 +33,10 @@ mod sky;
 mod sound;
 mod survival;
 mod terrain;
+mod trade;
 mod ui;
+mod villagers;
+mod villages;
 mod worlds;
 
 use avian3d::prelude::*;
@@ -51,6 +59,7 @@ pub enum MenuPage {
     Create,
     Settings,
     Credits,
+    Join,
 }
 
 /// What the player is doing in the game; decides which input is live.
@@ -64,6 +73,10 @@ pub enum Mode {
     Settings,
     Dead,
     Console,
+    /// In bed, waiting for everyone else to lie down too.
+    Sleeping,
+    /// At a village's market.
+    Trade,
     /// The Warden has fallen: the credits roll, then the game is won.
     Credits,
     Victory,
@@ -87,6 +100,8 @@ fn main() {
         .add_sub_state::<MenuPage>()
         .add_sub_state::<Mode>()
         .init_resource::<Creative>()
+        // Networking first: the others register what they send over it.
+        .add_plugins(net::NetPlugin)
         .add_plugins((
             terrain::TerrainPlugin,
             body::BodyPlugin,
@@ -114,6 +129,11 @@ fn main() {
             archery::ArcheryPlugin,
             goals::GoalsPlugin,
             credits::CreditsPlugin,
+            drops::DropsPlugin,
+            lobby::LobbyPlugin,
+            avatars::AvatarsPlugin,
+            beds::BedsPlugin,
         ))
+        .add_plugins((villages::VillagesPlugin, villagers::VillagersPlugin, trade::TradePlugin))
         .run();
 }

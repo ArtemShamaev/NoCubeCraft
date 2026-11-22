@@ -3,20 +3,25 @@
 use std::{fs, path::Path};
 
 use bevy::{ecs::system::SystemParam, prelude::*, tasks::IoTaskPool};
+use bevy_replicon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState, Creative,
     body::Body,
     containers::{ChestState, FurnaceState},
+    drops::{self, Drop, Dropped, SavedDrop},
     goals::Goals,
     items::{Inventory, PropKind},
     mobs::{Mob, SavedDog, SavedDogs},
+    net::{Guests, Joining, Welcome},
     player::{Player, PlayerStart, Spawning},
-    props::{self, Crop, Prop, PropAssets},
+    props::{self, Crop, Prop},
     sky::{START_TIME, TimeOfDay},
     survival::Vitals,
     terrain::{EditsSnapshot, Terrain},
+    villagers::{self, SavedVillager, Villager},
+    villages::{Founded, Village},
     worlds::CurrentWorld,
 };
 
@@ -53,6 +58,69 @@ struct State {
     dogs: Vec<SavedDog>,
     #[serde(default)]
     goals: Goals,
+    #[serde(default)]
+    drops: Vec<SavedDrop>,
+    #[serde(default)]
+    guests: Guests,
+    #[serde(default)]
+    villages: Vec<Village>,
+    #[serde(default)]
+    villagers: Vec<SavedVillager>,
+    #[serde(default)]
+    founded: Founded,
+}
+
+/// A player who visits this world over the network: where they are and what they carry.
+#[derive(Serialize, Deserialize, Clone)]
+pub struct SavedPlayer {
+    pub position: Vec3,
+    pub yaw: f32,
+    pub pitch: f32,
+    pub spawn: Vec3,
+    pub inventory: Inventory,
+    pub vitals: Vitals,
+    #[serde(default)]
+    pub goals: Goals,
+}
+
+impl SavedPlayer {
+    pub fn of(player: &Player, transform: &Transform, inventory: &Inventory, vitals: &Vitals, goals: &Goals) -> Self {
+        Self {
+            position: transform.translation,
+            yaw: player.yaw,
+            pitch: player.pitch,
+            spawn: player.spawn,
+            inventory: inventory.clone(),
+            vitals: vitals.clone(),
+            goals: *goals,
+        }
+    }
+}
+
+/// Sets a guest up from the host's welcome.
+fn enter_as_guest(commands: &mut Commands, welcome: &Welcome) -> Terrain {
+    let mut terrain = Terrain::new(welcome.seed);
+    if let Err(error) = terrain.restore(&welcome.edits) {
+        error!("the host's world did not load: {error}");
+    }
+    commands.insert_resource(Creative(welcome.creative));
+    commands.insert_resource(TimeOfDay(welcome.time));
+    match welcome.player.clone() {
+        Some(p) => {
+            commands.insert_resource(PlayerStart { position: p.position, yaw: p.yaw, pitch: p.pitch, spawn: p.spawn });
+            commands.insert_resource(p.inventory);
+            commands.insert_resource(if p.vitals.health > 0.0 { p.vitals } else { Vitals::default() });
+            commands.insert_resource(p.goals);
+        }
+        None => {
+            let spawn = welcome.spawn;
+            commands.insert_resource(PlayerStart { position: spawn, yaw: 0.0, pitch: 0.0, spawn });
+            commands.insert_resource(Inventory::default());
+            commands.insert_resource(Vitals::default());
+            commands.insert_resource(Goals::default());
+        }
+    }
+    terrain
 }
 
 #[derive(Serialize, Deserialize)]
@@ -68,7 +136,18 @@ struct SavedProp {
     chest: Option<ChestState>,
 }
 
-fn load(mut commands: Commands, mut world: ResMut<CurrentWorld>, prop_assets: Res<PropAssets>) {
+fn load(
+    mut commands: Commands,
+    world: Option<ResMut<CurrentWorld>>,
+    joining: Option<Res<Joining>>,
+    mut drop_writer: MessageWriter<Drop>,
+) {
+    if let Some(joining) = joining {
+        let terrain = enter_as_guest(&mut commands, &joining.0);
+        commands.insert_resource(terrain);
+        return;
+    }
+    let Some(mut world) = world else { return };
     world.touch();
     let mut terrain = Terrain::new(world.info.seed);
     commands.insert_resource(Creative(world.info.creative));
@@ -82,7 +161,7 @@ fn load(mut commands: Commands, mut world: ResMut<CurrentWorld>, prop_assets: Re
             }
             for p in &state.props {
                 let transform = Transform::from_translation(p.position).with_rotation(Quat::from_rotation_y(p.yaw));
-                let entity = props::spawn(&mut commands, &prop_assets, p.kind, transform, p.age);
+                let entity = props::spawn(&mut commands, p.kind, transform, p.age);
                 if let Some(furnace) = &p.furnace {
                     commands.entity(entity).insert(furnace.clone());
                 }
@@ -101,6 +180,15 @@ fn load(mut commands: Commands, mut world: ResMut<CurrentWorld>, prop_assets: Re
             commands.insert_resource(TimeOfDay(state.time_of_day));
             commands.insert_resource(SavedDogs(state.dogs));
             commands.insert_resource(state.goals);
+            drops::restore(&state.drops, &mut drop_writer);
+            commands.insert_resource(state.guests);
+            commands.insert_resource(state.founded);
+            for village in state.villages {
+                commands.spawn((DespawnOnExit(AppState::Game), Replicated, village));
+            }
+            for villager in &state.villagers {
+                villagers::restore(&mut commands, villager);
+            }
         }
         result => {
             if let Err(error) = result {
@@ -117,6 +205,7 @@ fn load(mut commands: Commands, mut world: ResMut<CurrentWorld>, prop_assets: Re
             commands.insert_resource(Vitals::default());
             commands.insert_resource(TimeOfDay(START_TIME));
             commands.insert_resource(Goals::default());
+            commands.insert_resource(Guests::default());
         }
     }
     commands.insert_resource(terrain);
@@ -167,7 +256,10 @@ type Ready = (With<Body>, Without<Spawning>);
 
 #[derive(SystemParam)]
 pub struct SaveParams<'w, 's> {
-    world: Res<'w, CurrentWorld>,
+    world: Option<Res<'w, CurrentWorld>>,
+    /// Guests don't save; the host keeps their things.
+    joining: Option<Res<'w, Joining>>,
+    guests: Option<Res<'w, Guests>>,
     terrain: Option<Res<'w, Terrain>>,
     player: Option<Single<'w, 's, (&'static Player, &'static Transform), Ready>>,
     inventory: Option<Res<'w, Inventory>>,
@@ -175,6 +267,10 @@ pub struct SaveParams<'w, 's> {
     time_of_day: Option<Res<'w, TimeOfDay>>,
     goals: Option<Res<'w, Goals>>,
     mobs: Query<'w, 's, (&'static Mob, &'static Transform)>,
+    drops: Query<'w, 's, (&'static Dropped, &'static Transform)>,
+    villages: Query<'w, 's, &'static Village>,
+    villagers: Query<'w, 's, (&'static Villager, &'static Transform)>,
+    founded: Option<Res<'w, Founded>>,
     props: Query<
         'w,
         's,
@@ -190,6 +286,9 @@ pub struct SaveParams<'w, 's> {
 
 impl SaveParams<'_, '_> {
     fn snapshot(&self) -> Option<Snapshot> {
+        if self.joining.is_some() || self.world.is_none() {
+            return None;
+        }
         let (player, transform) = **self.player.as_ref()?;
         let state = State {
             position: transform.translation,
@@ -213,6 +312,15 @@ impl SaveParams<'_, '_> {
                 .collect(),
             dogs: self.mobs.iter().filter_map(|(mob, t)| SavedDog::of(mob, t)).collect(),
             goals: *self.goals.as_deref()?,
+            drops: self.drops.iter().map(|(d, t)| d.saved(t)).collect(),
+            guests: (**self.guests.as_ref()?).clone(),
+            villages: self.villages.iter().cloned().collect(),
+            villagers: self
+                .villagers
+                .iter()
+                .map(|(v, t)| SavedVillager { villager: v.clone(), at: t.translation })
+                .collect(),
+            founded: (**self.founded.as_ref()?).clone(),
         };
         Some(Snapshot { state, edits: self.terrain.as_ref()?.edits_snapshot() })
     }
@@ -225,7 +333,7 @@ fn autosave(time: Res<Time<Real>>, params: SaveParams, mut since: Local<f32>) {
     }
     *since = 0.0;
     if let Some(snapshot) = params.snapshot() {
-        let dir = params.world.dir.clone();
+        let Some(dir) = params.world.as_ref().map(|w| w.dir.clone()) else { return };
         IoTaskPool::get().spawn(async move { save(&dir, &snapshot) }).detach();
     }
 }
@@ -233,15 +341,18 @@ fn autosave(time: Res<Time<Real>>, params: SaveParams, mut since: Local<f32>) {
 fn save_on_exit(mut exit: MessageReader<AppExit>, params: SaveParams) {
     if exit.read().next().is_some()
         && let Some(snapshot) = params.snapshot()
+        && let Some(world) = &params.world
     {
-        save(&params.world.dir, &snapshot);
+        save(&world.dir, &snapshot);
     }
 }
 
 /// Saves right away; run it before leaving the game, while the player still exists.
 pub fn save_now(params: SaveParams) {
-    if let Some(snapshot) = params.snapshot() {
-        save(&params.world.dir, &snapshot);
+    if let Some(snapshot) = params.snapshot()
+        && let Some(world) = &params.world
+    {
+        save(&world.dir, &snapshot);
     }
 }
 
@@ -254,6 +365,7 @@ fn close(mut commands: Commands) {
     commands.remove_resource::<PlayerStart>();
     commands.remove_resource::<Goals>();
     commands.remove_resource::<SavedDogs>();
+    commands.remove_resource::<Guests>();
 }
 
 #[cfg(test)]
@@ -284,6 +396,11 @@ mod tests {
             }],
             dogs: vec![SavedDog { position: Vec3::X, health: 7.0, sitting: true }],
             goals: Goals { stage: 4 },
+            drops: Vec::new(),
+            guests: Guests::default(),
+            villages: Vec::new(),
+            villagers: Vec::new(),
+            founded: Founded::default(),
         };
         let text = ron::to_string(&state).unwrap();
         let back: State = ron::from_str(&text).unwrap();

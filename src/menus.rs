@@ -85,8 +85,16 @@ fn fly_around(time: Res<Time<Real>>, terrain: Res<Terrain>, camera: Single<(&mut
 }
 
 /// The game world stands still while a menu is over it.
-fn pause_time(mode: Option<Res<State<Mode>>>, mut time: ResMut<Time<Virtual>>) {
-    let paused = mode.is_some_and(|m| matches!(**m, Mode::Paused | Mode::Settings | Mode::Credits | Mode::Victory));
+/// Menus stop the world, unless others are playing in it too.
+fn pause_time(
+    mode: Option<Res<State<Mode>>>,
+    mut time: ResMut<Time<Virtual>>,
+    server: Res<State<bevy_replicon::prelude::ServerState>>,
+    client: Res<State<bevy_replicon::prelude::ClientState>>,
+) {
+    let alone = *server == bevy_replicon::prelude::ServerState::Stopped && !crate::net::is_guest(&client);
+    let paused =
+        alone && mode.is_some_and(|m| matches!(**m, Mode::Paused | Mode::Settings | Mode::Credits | Mode::Victory));
     if paused != time.is_paused() {
         if paused { time.pause() } else { time.unpause() }
     }
@@ -122,7 +130,7 @@ fn backdrop() -> BackgroundGradient {
     ]))
 }
 
-fn menu_screen(commands: &mut Commands, page: MenuPage) -> Entity {
+pub fn menu_screen(commands: &mut Commands, page: MenuPage) -> Entity {
     let screen = ui::screen(commands, DespawnOnExit(page), Color::NONE);
     commands.entity(screen).insert(backdrop());
     screen
@@ -161,6 +169,10 @@ fn spawn_main(mut commands: Commands) {
     commands
         .entity(play)
         .observe(|_: On<PointerClick>, mut page: ResMut<NextState<MenuPage>>| page.set(MenuPage::Worlds));
+    let together = ui::button(&mut commands, panel, "Сетевая игра");
+    commands
+        .entity(together)
+        .observe(|_: On<PointerClick>, mut page: ResMut<NextState<MenuPage>>| page.set(MenuPage::Join));
     let settings = ui::button(&mut commands, panel, "Настройки");
     commands
         .entity(settings)
@@ -353,6 +365,7 @@ fn spawn_create(mut commands: Commands) {
 /// One adjustable setting: shows its value and steps it with the arrows.
 #[derive(Component, Clone, Copy)]
 enum Setting {
+    Skin,
     ViewDistance,
     Fov,
     Sensitivity,
@@ -362,7 +375,8 @@ enum Setting {
 }
 
 impl Setting {
-    const ALL: [Setting; 6] = [
+    const ALL: [Setting; 7] = [
+        Setting::Skin,
         Setting::ViewDistance,
         Setting::Fov,
         Setting::Sensitivity,
@@ -373,6 +387,7 @@ impl Setting {
 
     fn name(self) -> &'static str {
         match self {
+            Setting::Skin => "Внешность",
             Setting::ViewDistance => "Дальность прорисовки",
             Setting::Fov => "Поле зрения",
             Setting::Sensitivity => "Чувствительность мыши",
@@ -385,6 +400,7 @@ impl Setting {
     fn value(self, s: &Settings) -> String {
         let on_off = |b: bool| if b { "вкл" } else { "выкл" }.to_string();
         match self {
+            Setting::Skin => crate::avatars::SKINS[s.skin as usize % crate::avatars::SKINS.len()].1.into(),
             Setting::ViewDistance => format!("{:.0} м", s.view_distance),
             Setting::Fov => format!("{:.0}°", s.fov),
             Setting::Sensitivity => format!("{:.1}", s.mouse_sensitivity),
@@ -396,6 +412,10 @@ impl Setting {
 
     fn step(self, s: &mut Settings, dir: i32) {
         match self {
+            Setting::Skin => {
+                let n = crate::avatars::SKINS.len() as i32;
+                s.skin = (s.skin as i32 + dir).rem_euclid(n) as u8;
+            }
             Setting::ViewDistance => {
                 let all = Settings::VIEW_DISTANCES;
                 let i = all.iter().position(|d| *d >= s.view_distance).unwrap_or(all.len() - 1) as i32;
@@ -467,10 +487,15 @@ fn step_option(
     }
 }
 
-fn spawn_pause(mut commands: Commands) {
+/// The pause menu's column of buttons, which others add to.
+#[derive(Component)]
+pub struct PausePanel;
+
+pub fn spawn_pause(mut commands: Commands) {
     let screen = ui::screen(&mut commands, DespawnOnExit(Mode::Paused), Color::srgba(0.0, 0.0, 0.0, 0.5));
     ui::title(&mut commands, screen, "Пауза", 44.0);
     let panel = ui::panel(&mut commands, screen, 320.0);
+    commands.entity(panel).insert(PausePanel);
     let resume = ui::button(&mut commands, panel, "Продолжить");
     commands.entity(resume).observe(|_: On<PointerClick>, mut mode: ResMut<NextState<Mode>>| mode.set(Mode::Playing));
     let settings = ui::button(&mut commands, panel, "Настройки");
@@ -541,10 +566,11 @@ fn respawn(
 #[derive(Component)]
 struct LoadingScreen;
 
-fn spawn_loading(mut commands: Commands, world: Res<CurrentWorld>) {
+fn spawn_loading(mut commands: Commands, world: Option<Res<CurrentWorld>>) {
+    let name = world.map_or_else(|| "Сетевая игра".to_string(), |w| w.info.name.clone());
     let screen = ui::screen(&mut commands, (LoadingScreen, DespawnOnExit(AppState::Game)), Color::NONE);
     commands.entity(screen).insert((backdrop(), GlobalZIndex(20)));
-    ui::title(&mut commands, screen, &world.info.name, 40.0);
+    ui::title(&mut commands, screen, &name, 40.0);
     ui::label(&mut commands, screen, "Загрузка мира…", 18.0, Color::srgba(1.0, 1.0, 1.0, 0.75));
 }
 

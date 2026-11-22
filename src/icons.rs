@@ -23,6 +23,13 @@ impl Plugin for IconsPlugin {
 #[derive(Resource)]
 pub struct ItemIcons(HashMap<Item, Handle<Image>>);
 
+/// Hearts and drumsticks for health and hunger: empty, half and full.
+#[derive(Resource)]
+pub struct VitalIcons {
+    pub heart: [Handle<Image>; 3],
+    pub food: [Handle<Image>; 3],
+}
+
 impl ItemIcons {
     pub fn get(&self, item: Item) -> Handle<Image> {
         self.0[&item].clone()
@@ -30,22 +37,49 @@ impl ItemIcons {
 }
 
 fn setup(mut commands: Commands, mut images: ResMut<Assets<Image>>) {
+    let mut add = |canvas: Canvas| {
+        images.add(Image::new(
+            Extent3d { width: SIZE as u32, height: SIZE as u32, depth_or_array_layers: 1 },
+            TextureDimension::D2,
+            canvas.pixels.into_iter().flat_map(to_srgb8).collect(),
+            TextureFormat::Rgba8UnormSrgb,
+            RenderAssetUsages::RENDER_WORLD,
+        ))
+    };
     let icons = Item::ALL
         .into_iter()
         .map(|item| {
             let mut canvas = Canvas::new();
             paint(&mut canvas, item);
-            let image = Image::new(
-                Extent3d { width: SIZE as u32, height: SIZE as u32, depth_or_array_layers: 1 },
-                TextureDimension::D2,
-                canvas.pixels.into_iter().flat_map(to_srgb8).collect(),
-                TextureFormat::Rgba8UnormSrgb,
-                RenderAssetUsages::RENDER_WORLD,
-            );
-            (item, images.add(image))
+            (item, add(canvas))
         })
         .collect();
     commands.insert_resource(ItemIcons(icons));
+    let vital = |shape: fn(Vec2) -> f32, color: Rgb| {
+        [0.0, 0.5, 1.0].map(|fill| {
+            let mut c = Canvas::new();
+            c.shape(shape, [0.12, 0.1, 0.1]);
+            if fill > 0.0 {
+                c.shape(|p| shape(p).max(p.x - fill), color);
+            }
+            c
+        })
+    };
+    let [h0, h1, h2] = vital(heart, [0.85, 0.12, 0.12]);
+    let [f0, f1, f2] = vital(drumstick, [0.72, 0.42, 0.2]);
+    commands.insert_resource(VitalIcons { heart: [add(h0), add(h1), add(h2)], food: [add(f0), add(f1), add(f2)] });
+}
+
+fn heart(p: Vec2) -> f32 {
+    let q = p - Vec2::new(0.5, 0.5);
+    let lobes = (q - Vec2::new(-0.17, -0.1)).length().min((q - Vec2::new(0.17, -0.1)).length()) - 0.21;
+    lobes.min(rotated_square(p, Vec2::new(0.5, 0.48), 0.36))
+}
+
+fn drumstick(p: Vec2) -> f32 {
+    let meat = (rotate(p - Vec2::new(0.6, 0.4), 0.785) / Vec2::new(0.3, 0.22)).length() - 1.0;
+    let bone = segment(p, Vec2::new(0.2, 0.8), Vec2::new(0.45, 0.55)) - 0.06;
+    meat.min(bone).min(p.distance(Vec2::new(0.18, 0.82)) - 0.09)
 }
 
 type Rgb = [f32; 3];
@@ -146,6 +180,11 @@ fn paint(c: &mut Canvas, item: Item) {
                 [0.95, 0.95, 0.95],
             );
             c.shape(|p| segment(p, Vec2::new(0.24, 0.76), Vec2::new(0.7, 0.3)) - 0.012, [0.6, 0.6, 0.6]);
+        }
+        Item::Coin => {
+            c.shape(|p| p.distance(Vec2::splat(0.5)) - 0.3, [0.95, 0.75, 0.25]);
+            c.shape(|p| (p.distance(Vec2::splat(0.5)) - 0.21).abs() - 0.02, [0.75, 0.55, 0.15]);
+            c.shape(|p| segment(p, Vec2::new(0.5, 0.38), Vec2::new(0.5, 0.62)) - 0.04, [0.75, 0.55, 0.15]);
         }
         Item::Heart => {
             c.shape(

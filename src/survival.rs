@@ -1,6 +1,7 @@
 //! Health, hunger, falling and dying.
 
 use bevy::prelude::*;
+use bevy_replicon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -26,12 +27,40 @@ pub struct SurvivalPlugin;
 
 impl Plugin for SurvivalPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(
+        app.add_server_message::<Hurt>(Channel::Ordered).add_systems(Update, take_hurt).add_systems(
             Update,
             (fall_damage.after(MoveBodies), metabolism, die).chain().run_if(|mode: Option<Res<State<Mode>>>| {
                 mode.is_some_and(|m| matches!(**m, Mode::Playing | Mode::Inventory | Mode::Console))
             }),
         );
+    }
+}
+
+/// A guest hurt by something in the host's world, and pushed away from it.
+#[derive(Message, Serialize, Deserialize)]
+pub struct Hurt {
+    pub amount: f32,
+    pub push: Vec3,
+}
+
+fn take_hurt(
+    mut hurts: MessageReader<Hurt>,
+    creative: Option<Res<Creative>>,
+    vitals: Option<ResMut<Vitals>>,
+    mut body: Query<&mut Body, With<Player>>,
+) {
+    let (Some(creative), Some(mut vitals)) = (creative, vitals) else {
+        hurts.clear();
+        return;
+    };
+    for hurt in hurts.read() {
+        if !creative.0 {
+            vitals.damage(hurt.amount);
+        }
+        if let Ok(mut body) = body.single_mut() {
+            body.velocity += hurt.push;
+            body.ground_normal = None;
+        }
     }
 }
 

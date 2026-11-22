@@ -1,7 +1,14 @@
 //! Everything that holds items besides the player: the crafting grid, furnaces and chests,
 //! and a common way to address any slot.
 
-use bevy::{ecs::system::SystemParam, prelude::*};
+use bevy::{
+    ecs::{
+        entity::{EntityMapper, MapEntities},
+        system::SystemParam,
+    },
+    prelude::*,
+};
+use bevy_replicon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
@@ -20,7 +27,45 @@ impl Plugin for ContainersPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<OpenContainer>()
             .init_resource::<CraftGrid>()
-            .add_systems(Update, smelt.run_if(in_state(AppState::Game)));
+            .replicate::<FurnaceState>()
+            .replicate::<ChestState>()
+            .add_mapped_client_message::<Fill>(Channel::Ordered)
+            .add_systems(Update, (fill, smelt).run_if(in_state(AppState::Game)).run_if(crate::net::authority));
+    }
+}
+
+/// A player rearranged a furnace or chest: its whole contents as they left it.
+#[derive(Message, Serialize, Deserialize, Clone)]
+pub struct Fill {
+    pub container: Entity,
+    pub furnace: Option<FurnaceState>,
+    pub chest: Option<ChestState>,
+}
+
+impl MapEntities for Fill {
+    fn map_entities<M: EntityMapper>(&mut self, mapper: &mut M) {
+        self.container = mapper.get_mapped(self.container);
+    }
+}
+
+fn fill(
+    mut fills: MessageReader<FromClient<Fill>>,
+    mut furnaces: Query<&mut FurnaceState>,
+    mut chests: Query<&mut ChestState>,
+) {
+    for Fill { container, furnace, chest } in fills.read().map(|f| &f.message) {
+        if let (Some(new), Ok(mut old)) = (furnace, furnaces.get_mut(*container)) {
+            // The fire and its progress are the host's to keep.
+            *old = FurnaceState {
+                burn_left: old.burn_left,
+                burn_total: old.burn_total,
+                progress: old.progress,
+                ..new.clone()
+            };
+        }
+        if let (Some(new), Ok(mut old)) = (chest, chests.get_mut(*container)) {
+            *old = new.clone();
+        }
     }
 }
 
@@ -203,6 +248,19 @@ pub struct SlotsMut<'w, 's> {
 }
 
 impl SlotsMut<'_, '_> {
+    /// The open furnace or chest as it is now, to pass on to wherever it is kept.
+    pub fn fill(&self) -> Option<Fill> {
+        match *self.open {
+            OpenContainer::Furnace(e) => {
+                Some(Fill { container: e, furnace: self.furnaces.get(e).ok().cloned(), chest: None })
+            }
+            OpenContainer::Chest(e) => {
+                Some(Fill { container: e, furnace: None, chest: self.chests.get(e).ok().cloned() })
+            }
+            _ => None,
+        }
+    }
+
     /// The slot's storage, if it exists right now. The crafting result has none.
     pub fn slot(&mut self, slot: SlotRef) -> Option<&mut Option<Stack>> {
         match (slot, *self.open) {

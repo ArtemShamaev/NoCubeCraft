@@ -12,7 +12,10 @@ const GROUND_ACCELERATION: f32 = 14.0;
 const AIR_ACCELERATION: f32 = 2.0;
 const WATER_ACCELERATION: f32 = 4.0;
 const GRAVITY: f32 = 24.0;
-const JUMP_SPEED: f32 = 8.0;
+/// Clears 1.25 m, a block and a bit.
+const JUMP_SPEED: f32 = 7.75;
+/// Sneaking never steps off a drop deeper than this.
+const SNEAK_DROP: f32 = 0.6;
 const MAX_FALL_SPEED: f32 = 50.0;
 /// cos(50°): steeper surfaces are walls, not ground.
 const MIN_GROUND_NORMAL_Y: f32 = 0.64;
@@ -63,6 +66,10 @@ pub struct Body {
     pub jump: bool,
     /// Sinks when flying.
     pub descend: bool,
+    /// Sneaking: won't walk off an edge.
+    pub sneak: bool,
+    /// Sprinting, for the view to show it.
+    pub sprint: bool,
     /// No gravity; moves freely (creative mode).
     pub flying: bool,
     pub velocity: Vec3,
@@ -82,6 +89,8 @@ impl Body {
             wish: Vec3::ZERO,
             jump: false,
             descend: false,
+            sneak: false,
+            sprint: false,
             flying: false,
             velocity: Vec3::ZERO,
             ground_normal: None,
@@ -185,6 +194,25 @@ fn move_bodies(
         );
         let mut center = out.position;
         velocity = out.projected_velocity;
+
+        // Sneaking: keep whichever part of the move still has ground under it.
+        if body.sneak && was_grounded && !jumped && !body.in_water {
+            // Ground straight under the middle of the feet, as a capsule rolls off any edge.
+            let supported = |at: Vec3| {
+                let feet = at - offset + Vec3::Y * 0.05;
+                move_and_slide.spatial_query.cast_ray(feet, Dir3::NEG_Y, SNEAK_DROP + 0.05, true, &filter).is_some()
+            };
+            if !supported(center) {
+                let moved = center - start;
+                let keep = [Vec3::new(moved.x, moved.y, 0.0), Vec3::new(0.0, moved.y, moved.z)]
+                    .into_iter()
+                    .find(|m| supported(start + *m))
+                    .unwrap_or(Vec3::new(0.0, moved.y, 0.0));
+                center = start + keep;
+                let kept = |d: f32| if d == 0.0 { 0.0 } else { 1.0 };
+                velocity *= Vec3::new(kept(keep.x), 1.0, kept(keep.z));
+            }
+        }
 
         // Blocked by a low ledge while walking: climb onto it in one decisive step, far enough
         // that the capsule ends up resting on the ledge's top rather than its edge.

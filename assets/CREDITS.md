@@ -12,6 +12,7 @@
 - `models/chicken.glb` — Quaternius, «Chicken» (https://poly.pizza/m/Z3RCoCYss4).
 - `models/spider.glb` — Quaternius, «Spider» (https://poly.pizza/m/yRYJiAJyiM).
 - `models/wolf.glb` — Quaternius, «Wolf» (https://poly.pizza/m/P1gU3Qkr9r).
+- `models/skins/*` — Quaternius, персонажи из наборов «Ultimate Animated Character» (https://poly.pizza/m/5EGWBMpuXq, ZwF0K7WBmu, y9KWOVG21R, gKLBoRsyKe, qJ2gsTUBHL, Yg2bQZO6Hj, kZ3DmIoGip, 7pn3R6hPvE).
 - `models/skeleton.glb` — Quaternius, «Skeleton» (https://poly.pizza/m/DM4QScSmbS).
 
 ## Текстуры

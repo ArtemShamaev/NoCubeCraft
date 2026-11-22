@@ -16,7 +16,7 @@ use crate::{
     body::Body,
     icons::{ItemIcons, head_color},
     items::{Inventory, Item, ToolKind},
-    player::{EYE_HEIGHT, Player, PlayerCamera},
+    player::{EYE_HEIGHT, Player, PlayerCamera, SNEAK_DIP},
 };
 
 const SWING_SECS: f32 = 0.28;
@@ -224,15 +224,23 @@ fn bob(
     mut camera: Single<&mut Transform, With<PlayerCamera>>,
     mut phase: Local<f32>,
     mut amount: Local<f32>,
+    mut dip: Local<f32>,
+    mode: Option<Res<State<Mode>>>,
 ) {
     let speed = player.velocity.with_y(0.0).length();
     let walking = player.ground_normal.is_some() && !player.flying && speed > 0.5;
     let target = if walking { (speed / 4.5).min(1.5) } else { 0.0 };
     *amount += (target - *amount) * (1.0 - (-8.0 * time.delta_secs()).exp());
     *phase += speed * time.delta_secs() * 1.8;
+    let crouch = match () {
+        _ if mode.is_some_and(|m| **m == Mode::Sleeping) => EYE_HEIGHT - 0.3,
+        _ if player.sneak => SNEAK_DIP,
+        _ => 0.0,
+    };
+    *dip += (crouch - *dip) * (1.0 - (-14.0 * time.delta_secs()).exp());
     camera.translation = Vec3::new(
         phase.sin() * BOB_SWAY * *amount,
-        EYE_HEIGHT + (*phase * 2.0).sin().abs() * BOB_HEIGHT * *amount,
+        EYE_HEIGHT - *dip + (*phase * 2.0).sin().abs() * BOB_HEIGHT * *amount,
         0.0,
     );
 }

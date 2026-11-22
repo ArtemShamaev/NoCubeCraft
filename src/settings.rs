@@ -31,11 +31,28 @@ pub struct Settings {
     pub fullscreen: bool,
     pub vsync: bool,
     pub shadows: bool,
+    /// How other players see this one.
+    pub player_name: String,
+    /// The last host joined by address.
+    pub last_address: String,
+    /// How this player looks to the others: one of `avatars::SKINS`.
+    pub skin: u8,
 }
 
 impl Default for Settings {
     fn default() -> Self {
-        Self { view_distance: 300.0, fov: 75.0, mouse_sensitivity: 1.0, fullscreen: false, vsync: true, shadows: true }
+        let name = std::env::var("USER").or_else(|_| std::env::var("USERNAME")).unwrap_or_else(|_| "Игрок".into());
+        Self {
+            view_distance: 300.0,
+            fov: 75.0,
+            mouse_sensitivity: 1.0,
+            fullscreen: false,
+            vsync: true,
+            shadows: true,
+            player_name: name,
+            last_address: String::new(),
+            skin: 0,
+        }
     }
 }
 

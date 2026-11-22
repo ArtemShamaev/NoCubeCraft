@@ -59,6 +59,7 @@ pub enum Sfx {
     Click,
     Bow,
     Rattle,
+    Pickup,
 }
 
 impl Sfx {
@@ -87,7 +88,7 @@ impl Sfx {
             Sfx::ChestClose => vec!["sounds/doorClose_1.ogg".into()],
             Sfx::Page => vec!["sounds/bookFlip1.ogg".into()],
             Sfx::Inventory => vec!["sounds/cloth1.ogg".into()],
-            Sfx::Splash | Sfx::Click | Sfx::Bow | Sfx::Rattle => Vec::new(),
+            Sfx::Splash | Sfx::Click | Sfx::Bow | Sfx::Rattle | Sfx::Pickup => Vec::new(),
         }
     }
 }
@@ -139,7 +140,7 @@ fn setup(mut commands: Commands, server: Res<AssetServer>, mut sources: ResMut<A
     });
 }
 
-const ALL: [Sfx; 23] = [
+const ALL: [Sfx; 24] = [
     Sfx::DigSoft,
     Sfx::DigStone,
     Sfx::DigWood,
@@ -163,6 +164,7 @@ const ALL: [Sfx; 23] = [
     Sfx::Click,
     Sfx::Bow,
     Sfx::Rattle,
+    Sfx::Pickup,
 ];
 
 fn add_listener(mut commands: Commands, cameras: Query<Entity, (With<PlayerCamera>, Without<SpatialListener>)>) {
@@ -357,6 +359,8 @@ fn synthesize(sfx: Sfx, seed: u32) -> Vec<f32> {
             let raw = rng.noise();
             (raw - lp.run(raw, 0.3)) * 1.2 * (t * 80.0).min(1.0) * (-t * 7.0).exp()
         }),
+        // A short rising blip.
+        Sfx::Pickup => render(0.09, |t| sine(700.0 + seed as f32 * 40.0 + t * 4000.0, t) * (-t * 40.0).exp() * 0.35),
         // A plucked string: a falling twang with a breath of air.
         Sfx::Bow => render(0.35, |t| {
             let pitch = 180.0 + seed as f32 * 12.0 - t * 120.0;

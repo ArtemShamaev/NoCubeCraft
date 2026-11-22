@@ -21,8 +21,13 @@ pub const RADIUS: f32 = 0.35;
 pub const HEIGHT: f32 = 1.8;
 pub const EYE_HEIGHT: f32 = 1.62;
 
-const WALK_SPEED: f32 = 4.5;
-const SPRINT_SPEED: f32 = 7.5;
+const WALK_SPEED: f32 = 4.3;
+const SPRINT_SPEED: f32 = 5.6;
+const SNEAK_SPEED: f32 = 1.3;
+/// The eye drops this much while sneaking.
+pub const SNEAK_DIP: f32 = 0.3;
+/// Field of view grows by this factor while sprinting.
+const SPRINT_FOV: f32 = 1.12;
 const FLY_SPEED: f32 = 11.0;
 const FLY_SPRINT_SPEED: f32 = 24.0;
 /// Radians per pixel of mouse movement at sensitivity 1.
@@ -39,6 +44,7 @@ impl Plugin for PlayerPlugin {
             .add_systems(OnExit(Mode::Playing), release_cursor)
             .add_systems(Update, (grab_on_click, pause).run_if(in_state(Mode::Playing)))
             .add_systems(Update, (look, steer).chain().before(MoveBodies).run_if(in_state(AppState::Game)))
+            .add_systems(Update, sprint_fov.after(MoveBodies).run_if(in_state(AppState::Game)))
             .add_systems(Update, (wait_for_ground, fall_out).after(MoveBodies).run_if(in_state(AppState::Game)));
     }
 }
@@ -183,6 +189,7 @@ fn steer(
     creative: Res<Creative>,
     player: Single<(&mut Body, &Transform), With<Player>>,
     mut last_jump: Local<f32>,
+    (mut last_forward, mut sprinting): (Local<f32>, Local<bool>),
 ) {
     let (mut body, transform) = player.into_inner();
     if !creative.0 {
@@ -206,14 +213,39 @@ fn steer(
     }
     let axis = |pos: KeyCode, neg: KeyCode| keys.pressed(pos) as i32 as f32 - keys.pressed(neg) as i32 as f32;
     let input = Vec3::new(axis(KeyCode::KeyD, KeyCode::KeyA), 0.0, axis(KeyCode::KeyS, KeyCode::KeyW));
-    let sprint = keys.pressed(KeyCode::ShiftLeft);
-    let speed = match (body.flying, sprint) {
-        (true, true) => FLY_SPRINT_SPEED,
-        (true, false) => FLY_SPEED,
-        (false, true) => SPRINT_SPEED,
-        (false, false) => WALK_SPEED,
+    // Sprint with Ctrl or a double tap of W; it lasts while W is held.
+    if keys.just_pressed(KeyCode::KeyW) {
+        let now = time.elapsed_secs();
+        *sprinting = now - *last_forward < DOUBLE_TAP_SECS;
+        *last_forward = now;
+    }
+    let forward = keys.pressed(KeyCode::KeyW);
+    *sprinting = forward && (*sprinting || keys.pressed(KeyCode::ControlLeft));
+    let sneak = keys.pressed(KeyCode::ShiftLeft);
+    let speed = match (body.flying, *sprinting, sneak) {
+        (true, true, _) => FLY_SPRINT_SPEED,
+        (true, false, _) => FLY_SPEED,
+        (false, _, true) => SNEAK_SPEED,
+        (false, true, false) => SPRINT_SPEED,
+        (false, false, false) => WALK_SPEED,
     };
     body.wish = transform.rotation * input.normalize_or_zero() * speed;
     body.jump = keys.pressed(KeyCode::Space);
-    body.descend = keys.pressed(KeyCode::ControlLeft);
+    body.descend = sneak;
+    body.sneak = sneak && !body.flying;
+    body.sprint = *sprinting && !sneak;
+}
+
+/// The view widens a little while sprinting.
+fn sprint_fov(
+    time: Res<Time>,
+    settings: Res<Settings>,
+    player: Single<&Body, With<Player>>,
+    mut projection: Single<&mut Projection, With<PlayerCamera>>,
+) {
+    let Projection::Perspective(perspective) = &mut **projection else { return };
+    let base = settings.fov.to_radians();
+    let moving = player.velocity.with_y(0.0).length() > WALK_SPEED + 0.3;
+    let target = if player.sprint && moving { base * SPRINT_FOV } else { base };
+    perspective.fov += (target - perspective.fov) * (1.0 - (-10.0 * time.delta_secs()).exp());
 }

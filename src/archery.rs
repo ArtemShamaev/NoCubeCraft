@@ -2,6 +2,8 @@
 
 use avian3d::prelude::*;
 use bevy::{light::NotShadowCaster, prelude::*};
+use bevy_replicon::prelude::*;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState, Creative, Mode,
@@ -9,9 +11,10 @@ use crate::{
     hud::Toast,
     items::{Inventory, Item},
     mobs::Mob,
+    net::AvatarOf,
     player::{self, Player, PlayerCamera},
     sound::{PlaySound, Sfx},
-    survival::Vitals,
+    survival::{Hurt, Vitals},
     terrain::{SHARDS_Y, Terrain},
 };
 
@@ -29,17 +32,22 @@ pub struct ArcheryPlugin;
 
 impl Plugin for ArcheryPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Shoot>()
+        app.add_client_message::<Shoot>(Channel::Ordered)
+            .replicate::<ArrowLook>()
+            .add_observer(show_arrow)
             .init_resource::<Draw>()
             .add_systems(Startup, setup)
             .add_systems(Update, draw_bow.run_if(in_state(Mode::Playing)))
             .add_systems(OnExit(Mode::Playing), |mut draw: ResMut<Draw>| draw.0 = None)
-            .add_systems(Update, (loose, fly).chain().after(MoveBodies).run_if(in_state(AppState::Game)));
+            .add_systems(
+                Update,
+                (loose, fly).chain().after(MoveBodies).run_if(in_state(AppState::Game)).run_if(crate::net::authority),
+            );
     }
 }
 
 /// An arrow leaving a bow.
-#[derive(Message)]
+#[derive(Message, Serialize, Deserialize)]
 pub struct Shoot {
     pub from: Vec3,
     pub velocity: Vec3,
@@ -123,23 +131,30 @@ fn draw_bow(
     });
 }
 
-fn loose(
-    mut commands: Commands,
-    mut shots: MessageReader<Shoot>,
-    assets: Res<ArrowAssets>,
-    mut sounds: MessageWriter<PlaySound>,
-) {
+fn loose(mut commands: Commands, mut shots: MessageReader<FromClient<Shoot>>, mut sounds: MessageWriter<PlaySound>) {
     for shot in shots.read() {
+        let shot = &shot.message;
         commands.spawn((
             DespawnOnExit(AppState::Game),
+            Replicated,
+            ArrowLook,
             Arrow { velocity: shot.velocity, damage: shot.damage, by_player: shot.by_player, stuck: None },
-            Mesh3d(assets.mesh.clone()),
-            MeshMaterial3d(assets.material.clone()),
-            NotShadowCaster,
             Transform::from_translation(shot.from).looking_to(shot.velocity, Vec3::Y),
         ));
         sounds.write(PlaySound::at(Sfx::Bow, shot.from));
     }
+}
+
+/// Marks an arrow for everyone to see; its flight is the host's business.
+#[derive(Component, Serialize, Deserialize)]
+struct ArrowLook;
+
+fn show_arrow(add: On<Add<ArrowLook>>, mut commands: Commands, assets: Res<ArrowAssets>) {
+    commands.entity(add.entity).insert((
+        Mesh3d(assets.mesh.clone()),
+        MeshMaterial3d(assets.material.clone()),
+        NotShadowCaster,
+    ));
 }
 
 /// Moves arrows along their arcs; they stick in blocks and wound whatever they hit.
@@ -152,7 +167,8 @@ fn fly(
     mut arrows: Query<(Entity, &mut Arrow, &mut Transform)>,
     mut mobs: Query<(&mut Mob, &mut Body, &Transform), (Without<Player>, Without<Arrow>)>,
     player: Single<(&Transform, Option<&mut Body>), (With<Player>, Without<Mob>, Without<Arrow>)>,
-    mut sounds: MessageWriter<PlaySound>,
+    guests: Query<(&Transform, &AvatarOf), (Without<Player>, Without<Mob>, Without<Arrow>)>,
+    (mut sounds, mut hurts): (MessageWriter<PlaySound>, MessageWriter<ToClients<Hurt>>),
 ) {
     let dt = time.delta_secs();
     let (player_transform, mut player_body) = player.into_inner();
@@ -187,16 +203,28 @@ fn fly(
                 continue;
             }
         } else {
-            // The point of this step closest to the player's middle, inside their body.
-            let t = ((chest - from).dot(*dir)).clamp(0.0, length.min(wall));
-            let point = from + *dir * t;
-            let off = point - chest;
-            if off.with_y(0.0).length() < player::RADIUS + 0.1 && off.y.abs() < player::HEIGHT * 0.5 {
+            // Whether this step passes through a player standing with their middle at `middle`.
+            let hits = |middle: Vec3| {
+                let t = ((middle - from).dot(*dir)).clamp(0.0, length.min(wall));
+                let off = from + *dir * t - middle;
+                off.with_y(0.0).length() < player::RADIUS + 0.1 && off.y.abs() < player::HEIGHT * 0.5
+            };
+            let push = dir.with_y(0.0).normalize_or_zero() * 3.0;
+            if let Some((_, guest)) = guests.iter().find(|(t, _)| hits(t.translation + Vec3::Y * player::HEIGHT * 0.5))
+            {
+                hurts.write(ToClients {
+                    targets: SendTargets::Single(guest.0),
+                    message: Hurt { amount: arrow.damage, push },
+                });
+                commands.entity(entity).despawn();
+                continue;
+            }
+            if hits(chest) {
                 if !creative.0 {
                     vitals.damage(arrow.damage);
                 }
                 if let Some(body) = &mut player_body {
-                    body.velocity += dir.with_y(0.0).normalize_or_zero() * 3.0;
+                    body.velocity += push;
                 }
                 commands.entity(entity).despawn();
                 continue;

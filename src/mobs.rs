@@ -4,23 +4,27 @@
 use std::f32::consts::TAU;
 
 use avian3d::prelude::*;
+use bevy::ecs::entity::{EntityMapper, MapEntities};
 use bevy::{
     prelude::*,
     world_serialization::{WorldAsset, WorldAssetRoot, WorldInstanceReady},
 };
+use bevy_replicon::prelude::*;
 use serde::{Deserialize, Serialize};
 
 use crate::{
     AppState, Creative, Mode,
     archery::Shoot,
     body::{Body, Layer, MoveBodies},
+    drops::Drop,
     goals::Goals,
     hud::Toast,
-    items::{Inventory, Item, PropKind},
+    items::{Item, PropKind},
+    net::{self, AvatarOf, Notice},
     player::{self, Player},
     props::{Prop, TORCH_SAFE_RADIUS},
     sky::TimeOfDay,
-    survival::Vitals,
+    survival::{Hurt, Vitals},
     terrain::{Biome, CELL, Material, SEA_LEVEL, SHARDS_ABOVE, SHARDS_Y, Terrain},
 };
 
@@ -54,20 +58,33 @@ pub struct MobsPlugin;
 
 impl Plugin for MobsPlugin {
     fn build(&self, app: &mut App) {
-        app.add_message::<Summon>()
+        app.add_client_message::<Summon>(Channel::Ordered)
+            .add_mapped_client_message::<Attack>(Channel::Ordered)
+            .add_mapped_client_message::<Order>(Channel::Ordered)
+            .add_server_message::<Won>(Channel::Ordered)
+            .replicate::<Mob>()
+            .add_observer(dress_mob)
             .add_systems(Startup, setup)
-            .add_systems(Update, (summon, bring_dogs).run_if(in_state(AppState::Game)))
+            .add_systems(Update, celebrate.run_if(in_state(AppState::Game)))
             .add_systems(
                 Update,
-                (spawn_mobs, think).chain().before(MoveBodies).run_if(|mode: Option<Res<State<Mode>>>| {
-                    mode.is_some_and(|m| !matches!(**m, Mode::Paused | Mode::Settings | Mode::Credits | Mode::Victory))
-                }),
+                (summon, bring_dogs, take_orders).run_if(in_state(AppState::Game)).run_if(crate::net::authority),
             )
-            .add_systems(Update, (die, animate).after(MoveBodies).run_if(in_state(AppState::Game)));
+            .add_systems(
+                Update,
+                (spawn_mobs, think)
+                    .chain()
+                    .before(MoveBodies)
+                    .run_if(in_state(AppState::Game))
+                    .run_if(|time: Res<Time<Virtual>>| !time.is_paused())
+                    .run_if(crate::net::authority),
+            )
+            .add_systems(Update, die.after(MoveBodies).run_if(in_state(AppState::Game)).run_if(crate::net::authority))
+            .add_systems(Update, animate.after(MoveBodies).run_if(in_state(AppState::Game)));
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Serialize, Deserialize)]
 pub enum MobKind {
     Sheep,
     Zombie,
@@ -99,16 +116,87 @@ pub struct Species {
 }
 
 /// A creature to put into the world right away (the `summon` cheat, the altar).
-#[derive(Message)]
+#[derive(Message, Serialize, Deserialize)]
 pub struct Summon {
     pub kind: MobKind,
     pub at: Vec3,
     pub yaw: f32,
 }
 
-fn summon(mut commands: Commands, mut summons: MessageReader<Summon>, models: Res<MobModels>) {
+fn summon(mut commands: Commands, mut summons: MessageReader<FromClient<Summon>>) {
     for s in summons.read() {
-        spawn_mob(&mut commands, &models, Mob::new(s.kind), s.at, s.yaw);
+        spawn_mob(&mut commands, Mob::new(s.message.kind), s.message.at, s.message.yaw);
+    }
+}
+
+/// The Warden has fallen: everyone in the world has won.
+#[derive(Message, Serialize, Deserialize)]
+pub struct Won;
+
+fn celebrate(mut won: MessageReader<Won>, mut goals: ResMut<Goals>, mut mode: ResMut<NextState<Mode>>) {
+    if won.read().last().is_some() {
+        goals.win();
+        mode.set(Mode::Credits);
+    }
+}
+
+/// A player hitting a creature, sent to wherever creatures live.
+#[derive(Message, Serialize, Deserialize, Clone, Copy)]
+pub struct Attack {
+    pub mob: Entity,
+    pub damage: f32,
+    pub from: Vec3,
+}
+
+impl MapEntities for Attack {
+    fn map_entities<M: EntityMapper>(&mut self, mapper: &mut M) {
+        self.mob = mapper.get_mapped(self.mob);
+    }
+}
+
+/// What a player tells a creature: a bone to a wolf, or "sit" to a dog.
+#[derive(Message, Serialize, Deserialize, Clone, Copy)]
+pub struct Order {
+    pub mob: Entity,
+    pub order: OrderKind,
+}
+
+#[derive(Serialize, Deserialize, Clone, Copy)]
+pub enum OrderKind {
+    /// Fed a bone; the roll decides if it takes.
+    Tame(f32),
+    Sit,
+}
+
+impl MapEntities for Order {
+    fn map_entities<M: EntityMapper>(&mut self, mapper: &mut M) {
+        self.mob = mapper.get_mapped(self.mob);
+    }
+}
+
+fn take_orders(
+    mut attacks: MessageReader<FromClient<Attack>>,
+    mut orders: MessageReader<FromClient<Order>>,
+    mut mobs: Query<(&mut Mob, &mut Body, &Transform)>,
+    mut notices: MessageWriter<ToClients<Notice>>,
+) {
+    for attack in attacks.read() {
+        if let Ok((mut mob, mut body, transform)) = mobs.get_mut(attack.message.mob) {
+            mob.hit(&mut body, attack.message.damage, attack.message.from, transform.translation);
+        }
+    }
+    for order in orders.read() {
+        let Ok((mut mob, ..)) = mobs.get_mut(order.message.mob) else { continue };
+        let text = match order.message.order {
+            OrderKind::Sit if mob.tame => {
+                mob.sitting = !mob.sitting;
+                if mob.sitting { "Пёс сидит" } else { "Пёс идёт за вами" }
+            }
+            OrderKind::Sit => continue,
+            OrderKind::Tame(roll) if mob.tame_with_bone(roll) => "Волк приручён! Теперь это ваш пёс",
+            OrderKind::Tame(_) => "Волк не доверяет вам. Ещё кость?",
+        };
+        net::notify(&mut notices, order.client_id, text);
     }
 }
 
@@ -252,7 +340,7 @@ impl MobKind {
     }
 }
 
-#[derive(Component)]
+#[derive(Component, Serialize, Deserialize)]
 pub struct Mob {
     pub kind: MobKind,
     pub health: f32,
@@ -352,7 +440,6 @@ pub struct SavedDogs(pub Vec<SavedDog>);
 
 fn bring_dogs(
     mut commands: Commands,
-    models: Res<MobModels>,
     dogs: Option<Res<SavedDogs>>,
     player: Query<&Transform, (With<Player>, With<Body>)>,
 ) {
@@ -362,7 +449,7 @@ fn bring_dogs(
         let near = dog.position.distance(player.translation) < DOG_CATCH_UP;
         let at = if near { dog.position } else { player.translation + Vec3::new(i as f32 * 0.6 - 1.0, 0.3, 1.0) };
         let mob = Mob { tame: true, sitting: dog.sitting && near, health: dog.health, ..Mob::new(MobKind::Wolf) };
-        spawn_mob(&mut commands, &models, mob, at, 0.0);
+        spawn_mob(&mut commands, mob, at, 0.0);
     }
     commands.remove_resource::<SavedDogs>();
 }
@@ -415,24 +502,32 @@ fn setup(mut commands: Commands, server: Res<AssetServer>, mut graphs: ResMut<As
 struct Animated {
     player: Entity,
     playing: AnimationNodeIndex,
+    /// Where it was last frame, and how fast it has been moving: guests see only positions.
+    last: Vec3,
+    speed: f32,
 }
 
-fn spawn_mob(commands: &mut Commands, models: &MobModels, mob: Mob, at: Vec3, yaw: f32) {
+/// A creature that thinks: only where the world is owned. Its looks come from [`dress_mob`].
+fn spawn_mob(commands: &mut Commands, mob: Mob, at: Vec3, yaw: f32) {
+    let body = Body::new(mob.kind.species().radius, mob.kind.species().height);
+    commands.spawn((
+        DespawnOnExit(AppState::Game),
+        Replicated,
+        mob,
+        body,
+        Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)),
+    ));
+}
+
+/// Model and collider for a creature, on the host and on every guest.
+fn dress_mob(add: On<Add<Mob>>, mut commands: Commands, mobs: Query<&Mob>, models: Res<MobModels>) {
+    let Ok(mob) = mobs.get(add.entity) else { return };
     let kind = mob.kind;
-    let body = Body::new(kind.species().radius, kind.species().height);
-    let collider = Collider::compound(vec![(body.center_offset(), Quat::IDENTITY, body.collider())]);
+    let shape = Body::new(kind.species().radius, kind.species().height);
+    let collider = Collider::compound(vec![(shape.center_offset(), Quat::IDENTITY, shape.collider())]);
     let model = models.get(kind);
-    let mob = commands
-        .spawn((
-            DespawnOnExit(AppState::Game),
-            mob,
-            body,
-            RigidBody::Kinematic,
-            collider,
-            Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)),
-            Visibility::default(),
-        ))
-        .id();
+    let mob = add.entity;
+    commands.entity(mob).insert((RigidBody::Kinematic, collider, Visibility::default()));
     // Models face +Z; mobs walk towards -Z.
     commands
         .spawn((
@@ -451,7 +546,12 @@ fn spawn_mob(commands: &mut Commands, models: &MobModels, mob: Mob, at: Vec3, ya
                     if let Ok(mut player) = players.get_mut(child) {
                         player.play(model.idle).repeat();
                         commands.entity(child).insert(AnimationGraphHandle(model.graph.clone()));
-                        commands.entity(mob).insert(Animated { player: child, playing: model.idle });
+                        commands.entity(mob).insert(Animated {
+                            player: child,
+                            playing: model.idle,
+                            last: Vec3::ZERO,
+                            speed: 0.0,
+                        });
                         break;
                     }
                 }
@@ -462,19 +562,23 @@ fn spawn_mob(commands: &mut Commands, models: &MobModels, mob: Mob, at: Vec3, ya
 fn spawn_mobs(
     mut commands: Commands,
     time: Res<Time>,
-    models: Res<MobModels>,
     terrain: Res<Terrain>,
     time_of_day: Res<TimeOfDay>,
     spatial_query: SpatialQuery,
     player: Single<&Transform, (With<Player>, With<Body>)>,
+    guests: Query<&Transform, With<AvatarOf>>,
     mobs: Query<&Mob>,
     props: Query<(&Prop, &Transform)>,
     mut animal_timer: Local<f32>,
     mut monster_timer: Local<f32>,
 ) {
     let dt = time.delta_secs();
+    let seed = (time.elapsed_secs() * 1000.0) as u32;
+    // Creatures come to life around one of the players, a different one each time.
+    let around: Vec<Vec3> = guests.iter().map(|t| t.translation).chain([player.translation]).collect();
+    let center = around[(rand01(seed ^ 0x7f4a) * around.len() as f32) as usize % around.len()];
     // Only skeletons roam the Shards, by day and night alike.
-    let shards = player::in_shards(player.translation);
+    let shards = player::in_shards(center);
     let night = time_of_day.is_night() || shards;
     let (timer, period, max) = if night {
         (&mut *monster_timer, MONSTER_SPAWN_SECS, MAX_MONSTERS)
@@ -487,10 +591,9 @@ fn spawn_mobs(
     }
     *timer = 0.0;
 
-    let seed = (time.elapsed_secs() * 1000.0) as u32;
     let angle = rand01(seed) * TAU;
     let distance = SPAWN_MIN_DISTANCE + rand01(seed ^ 0x9e37) * (SPAWN_MAX_DISTANCE - SPAWN_MIN_DISTANCE);
-    let xz = player.translation + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance;
+    let xz = center + Vec3::new(angle.cos(), 0.0, angle.sin()) * distance;
     // Each biome has its own creatures.
     let pick = |kinds: &[MobKind]| kinds.get((rand01(seed ^ 0x3c6e) * kinds.len() as f32) as usize).copied();
     let kind = match (night, terrain.biome(xz.x, xz.z)) {
@@ -526,7 +629,7 @@ fn spawn_mobs(
     if kind.hostile() && lit {
         return;
     }
-    spawn_mob(&mut commands, &models, Mob::new(kind), ground + Vec3::Y * 0.05, angle);
+    spawn_mob(&mut commands, Mob::new(kind), ground + Vec3::Y * 0.05, angle);
 }
 
 /// Picks a direction to stroll in, or stands still, for a few seconds.
@@ -548,13 +651,22 @@ fn think(
     (mut vitals, creative): (ResMut<Vitals>, Res<Creative>),
     mut mobs: Query<(Entity, &mut Mob, &mut Body, &mut Transform), Without<Player>>,
     mut player: Single<(&Transform, Option<&mut Body>), With<Player>>,
-    mut shots: MessageWriter<Shoot>,
+    guests: Query<(&Transform, &AvatarOf), (Without<Player>, Without<Mob>)>,
+    (mut shots, mut hurts): (MessageWriter<Shoot>, MessageWriter<ToClients<Hurt>>),
 ) {
     let dt = time.delta_secs();
     let (player_transform, player_body) = &mut *player;
     let target = player_transform.translation;
     let ready = player_body.is_some();
-    let alive = ready && !creative.0;
+    // Everyone a monster may go for: guests are `Some` of how to reach them.
+    let mut prey: Vec<(Vec3, Option<ClientId>)> = guests.iter().map(|(t, a)| (t.translation, Some(a.0))).collect();
+    if ready {
+        prey.push((target, None));
+    }
+    if creative.0 {
+        prey.clear();
+    }
+    let everyone: Vec<Vec3> = guests.iter().map(|(t, _)| t.translation).chain([target]).collect();
     let enemies: Vec<(Entity, Vec3)> = mobs
         .iter()
         .filter(|(_, m, ..)| m.alive() && m.hostile() && m.kind != MobKind::Warden)
@@ -564,8 +676,11 @@ fn think(
 
     for (entity, mut mob, mut body, mut transform) in &mut mobs {
         let here = transform.translation;
-        let to_player = target - here;
-        if to_player.length() > DESPAWN_DISTANCE && !mob.tame && mob.kind != MobKind::Warden {
+        let nearest = prey.iter().min_by(|a, b| a.0.distance(here).total_cmp(&b.0.distance(here)));
+        let (to_player, who) = nearest.map_or((target - here, None), |&(at, who)| (at - here, Some(who)));
+        let alive = who.is_some();
+        let far = everyone.iter().all(|p| p.distance(here) > DESPAWN_DISTANCE);
+        if far && !mob.tame && mob.kind != MobKind::Warden {
             commands.entity(entity).despawn();
             continue;
         }
@@ -592,7 +707,7 @@ fn think(
                 .min_by(|a, b| a.1.distance(here).total_cmp(&b.1.distance(here)));
             if mob.sitting {
                 // Stays put until told otherwise.
-            } else if to_player.length() > DOG_CATCH_UP && ready {
+            } else if (target - here).length() > DOG_CATCH_UP && ready {
                 transform.translation = target + Vec3::new(1.0, 0.3, 1.0);
                 body.velocity = Vec3::ZERO;
             } else if let Some(&(prey, at)) = prey {
@@ -606,9 +721,10 @@ fn think(
                         bites.push((prey, species.damage, here));
                     }
                 }
-            } else if flat.length() > DOG_HEEL {
-                let speed = if flat.length() > 8.0 { species.run } else { species.walk * 1.5 };
-                wish = flat.normalize_or_zero() * speed;
+            } else if (target - here).with_y(0.0).length() > DOG_HEEL {
+                let heel = (target - here).with_y(0.0);
+                let speed = if heel.length() > 8.0 { species.run } else { species.walk * 1.5 };
+                wish = heel.normalize_or_zero() * speed;
             }
         } else if !mob.hostile() {
             if mob.scared > 0.0 {
@@ -629,7 +745,7 @@ fn think(
                     Vec3::ZERO
                 };
                 let eye = here + Vec3::Y * species.height * 0.85;
-                let chest = target + Vec3::Y * player::HEIGHT * 0.6;
+                let chest = here + to_player + Vec3::Y * player::HEIGHT * 0.6;
                 let line = chest - eye;
                 if mob.timer <= 0.0 && terrain.raycast(eye, line, line.length()).is_none() {
                     let warden = mob.kind == MobKind::Warden;
@@ -652,10 +768,21 @@ fn think(
                     if mob.timer <= 0.0 {
                         mob.timer = ATTACK_SECS;
                         mob.since_attack = 0.0;
-                        vitals.damage(species.damage);
-                        if let Some(body) = player_body {
-                            body.velocity += toward * 5.0 + Vec3::Y * 3.0;
-                            body.ground_normal = None;
+                        let push = toward * 5.0 + Vec3::Y * 3.0;
+                        match who.flatten() {
+                            Some(client) => {
+                                hurts.write(ToClients {
+                                    targets: SendTargets::Single(client),
+                                    message: Hurt { amount: species.damage, push },
+                                });
+                            }
+                            None => {
+                                vitals.damage(species.damage);
+                                if let Some(body) = player_body {
+                                    body.velocity += push;
+                                    body.ground_normal = None;
+                                }
+                            }
                         }
                     }
                 }
@@ -703,12 +830,12 @@ fn think(
 fn die(
     mut commands: Commands,
     time: Res<Time>,
-    mut inventory: ResMut<Inventory>,
     mut toast: ResMut<Toast>,
-    (mut goals, mut mode): (ResMut<Goals>, ResMut<NextState<Mode>>),
-    mut mobs: Query<(Entity, &mut Mob)>,
+    mut won: MessageWriter<ToClients<Won>>,
+    mut drops: MessageWriter<Drop>,
+    mut mobs: Query<(Entity, &mut Mob, &Transform)>,
 ) {
-    for (entity, mut mob) in &mut mobs {
+    for (entity, mut mob, transform) in &mut mobs {
         if let Some(left) = &mut mob.dying {
             *left -= time.delta_secs();
             if *left <= 0.0 {
@@ -724,41 +851,37 @@ fn die(
             toast.show("Ваш пёс погиб".into());
         }
         if mob.kind == MobKind::Warden {
-            goals.win();
-            mode.set(Mode::Credits);
+            won.write(ToClients { targets: SendTargets::All, message: Won });
         }
         // Sunburnt monsters just crumble; only the player's kills give loot.
         if !mob.by_player {
             continue;
         }
         let seed = (entity.to_bits() as u32) ^ (time.elapsed_secs() * 1000.0) as u32;
-        let mut lost = 0;
-        let mut gained = Vec::new();
+        let at = transform.translation + Vec3::Y * 0.5;
         for (i, &(item, least, most)) in mob.kind.species().drops.iter().enumerate() {
             let count = (least + (rand01(seed ^ (i as u32 * 0x77)) * (most - least + 1) as f32) as u32).min(most);
             if count > 0 {
-                lost += inventory.add(item, count);
-                gained.push(format!("+{count} {}", item.name()));
+                drops.write(Drop::pop(item, count, at, seed ^ i as u32));
             }
-        }
-        if !gained.is_empty() {
-            toast.show(gained.join(", "));
-        }
-        if lost > 0 {
-            toast.show("Инвентарь полон".into());
         }
     }
 }
 
 /// Picks the clip that fits what each mob is doing and blends into it.
 fn animate(
+    time: Res<Time>,
     models: Res<MobModels>,
-    mut mobs: Query<(&Mob, &Body, &mut Animated)>,
+    mut mobs: Query<(&Mob, &Transform, &mut Animated)>,
     mut players: Query<&mut AnimationPlayer>,
 ) {
-    for (mob, body, mut animated) in &mut mobs {
+    let dt = time.delta_secs().max(1e-3);
+    for (mob, transform, mut animated) in &mut mobs {
         let model = models.get(mob.kind);
-        let speed = body.velocity.with_y(0.0).length();
+        let moved = (transform.translation - animated.last).with_y(0.0).length() / dt;
+        animated.last = transform.translation;
+        animated.speed += (moved - animated.speed) * (1.0 - (-8.0 * dt).exp());
+        let speed = animated.speed;
         let wanted = if !mob.alive() {
             model.death
         } else if mob.since_attack < 0.6 {

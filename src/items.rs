@@ -69,6 +69,7 @@ pub enum Item {
     Thread,
     Feather,
     Heart,
+    Coin,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -170,6 +171,7 @@ impl Item {
             Item::Thread => "Нить",
             Item::Feather => "Перо",
             Item::Heart => "Сердце Осколков",
+            Item::Coin => "Монета",
         }
     }
 
@@ -263,7 +265,7 @@ impl Item {
     }
 
     /// Every item, for the creative catalogue and commands.
-    pub const ALL: [Item; 64] = [
+    pub const ALL: [Item; 65] = [
         Item::Dirt,
         Item::Stone,
         Item::Sand,
@@ -328,6 +330,7 @@ impl Item {
         Item::Wheat,
         Item::Bread,
         Item::Heart,
+        Item::Coin,
     ];
 
     /// Name used by console commands.
@@ -433,6 +436,11 @@ impl Inventory {
             }
             None => stack.count,
         }
+    }
+
+    /// Whether at least one more `item` fits.
+    pub fn has_room(&self, item: Item) -> bool {
+        self.slots.iter().any(|s| s.is_none_or(|s| s.item == item && s.count < item.max_stack()))
     }
 
     pub fn count(&self, item: Item) -> u32 {

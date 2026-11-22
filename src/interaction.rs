@@ -5,21 +5,25 @@ use bevy::{input::mouse::AccumulatedMouseScroll, prelude::*};
 
 use crate::{
     AppState, Creative, Mode,
+    beds::Sleep,
     body::Body,
     building::{self, BlockSize, BuildTool},
-    containers::{ChestState, FurnaceState, OpenContainer},
+    containers::OpenContainer,
+    drops::Drop,
     effects::Debris,
     falling::{Activate, Removed},
     goals::ALTAR_CORES,
     hud::{Progress, Toast},
     items::{HOTBAR, Inventory, Item, PropKind, Tool, ToolKind},
-    mobs::{Mob, MobKind, Summon, rand01},
+    mobs::{Attack, Mob, MobKind, Order, OrderKind, Summon, rand01},
     player::{self, Player, PlayerCamera},
-    props::{self, Crop, Prop, PropAssets},
+    props::{Break, Place, Prop},
     sky::TimeOfDay,
     sound::{PlaySound, Sfx},
     survival::Vitals,
     terrain::{ALTAR, Block, CELL, Material, SHARDS_Y, Shape, Terrain, TerrainChunk},
+    trade::Market,
+    villagers::VillagerOf,
 };
 
 const REACH: f32 = 5.0;
@@ -33,7 +37,6 @@ const SEED_CHANCE: f32 = 0.02;
 const STICK_CHANCE: f32 = 0.03;
 /// Zombies this close keep the player awake.
 const SLEEP_SAFE_RADIUS: f32 = 16.0;
-const MORNING: f32 = 0.0;
 
 pub struct InteractionPlugin;
 
@@ -205,6 +208,9 @@ struct Feedback<'w> {
     debris: MessageWriter<'w, Debris>,
     sounds: MessageWriter<'w, PlaySound>,
     removed: MessageWriter<'w, Removed>,
+    drops: MessageWriter<'w, Drop>,
+    attacks: MessageWriter<'w, Attack>,
+    breaks: MessageWriter<'w, Break>,
 }
 
 impl Feedback<'_> {
@@ -218,9 +224,8 @@ impl Feedback<'_> {
             .map(|(_, b)| b.material)
             .max_by_key(|m| region.iter().filter(|(_, b)| b.material == *m).count())
             .unwrap_or(first.material);
-        let n = size.cells();
-        let center = building::dig_origin(region[0].0, n).as_vec3() * CELL + Vec3::splat(n as f32 * CELL / 2.0);
-        self.debris.write(Debris { at: center, size: n as f32 * CELL, material });
+        let center = region_center(region, size);
+        self.debris.write(Debris { at: center, size: size.cells() as f32 * CELL, material });
         let sfx = match tool_for(material) {
             ToolKind::Pickaxe => Sfx::DigStone,
             ToolKind::Axe => Sfx::DigWood,
@@ -228,6 +233,18 @@ impl Feedback<'_> {
         };
         self.sounds.write(PlaySound::at(sfx, center));
     }
+
+    /// Items left lying where something was dug or broken.
+    fn drop(&mut self, items: &[(Item, u32)], at: Vec3) {
+        for (i, &(item, count)) in items.iter().enumerate().filter(|(_, (_, n))| *n > 0) {
+            self.drops.write(Drop::pop(item, count, at, i as u32 ^ at.x.to_bits() ^ at.z.to_bits()));
+        }
+    }
+}
+
+fn region_center(region: &[(IVec3, Block)], size: BlockSize) -> Vec3 {
+    let n = size.cells();
+    building::dig_origin(region[0].0, n).as_vec3() * CELL + Vec3::splat(n as f32 * CELL / 2.0)
 }
 
 /// Work in progress on whatever the left button holds: a block region, a prop.
@@ -240,7 +257,6 @@ struct Work {
 
 /// Left button: dig, chop, break props, attack.
 fn primary(
-    mut commands: Commands,
     time: Res<Time>,
     mouse: Res<ButtonInput<MouseButton>>,
     cursor: Single<&bevy::window::CursorOptions>,
@@ -252,8 +268,8 @@ fn primary(
     mut inventory: ResMut<Inventory>,
     mut toast: ResMut<Toast>,
     mut progress: ResMut<Progress>,
-    props: Query<(&Prop, Option<&Crop>, &Transform, Option<&FurnaceState>, Option<&ChestState>)>,
-    mut mobs: Query<(&mut Mob, &mut Body, &Transform), Without<Player>>,
+    props: Query<&Transform, With<Prop>>,
+    mobs: Query<(&Mob, &Transform), Without<Player>>,
     (mut work, mut attack_cooldown): (Local<Work>, Local<f32>),
     mut feedback: Feedback,
 ) {
@@ -273,19 +289,19 @@ fn primary(
             progress.0 = None;
         }
         Target::Entity { entity, distance, .. } => {
-            if let Ok((mut mob, mut body, transform)) = mobs.get_mut(entity) {
+            if let Ok((mob, transform)) = mobs.get(entity) {
                 work.key = None;
                 progress.0 = None;
-                if distance <= ATTACK_REACH && *attack_cooldown <= 0.0 {
+                if distance <= ATTACK_REACH && *attack_cooldown <= 0.0 && mob.alive() {
                     *attack_cooldown = ATTACK_SECS;
                     let damage = tool.map_or(1.5, |t| t.damage);
-                    mob.hit(&mut body, damage, player.translation, transform.translation);
+                    feedback.attacks.write(Attack { mob: entity, damage, from: player.translation });
                     inventory.wear_selected(1);
                     feedback.sounds.write(PlaySound::at(Sfx::Hit, transform.translation + Vec3::Y));
                 }
                 return;
             }
-            let Ok((prop, crop, prop_transform, furnace, chest)) = props.get(entity) else { return };
+            let Ok(prop_transform) = props.get(entity) else { return };
             let key = (IVec3::ZERO, tool_settings.size, Some(entity));
             if work.key != Some(key) {
                 *work = Work { key: Some(key), ..default() };
@@ -297,29 +313,8 @@ fn primary(
             }
             *work = Work::default();
             progress.0 = None;
-            commands.entity(entity).despawn();
+            feedback.breaks.write(Break(entity));
             feedback.sounds.write(PlaySound::at(Sfx::DigWood, prop_transform.translation));
-            if creative.0 {
-                return;
-            }
-            let gained: &[(Item, u32)] = match prop.0 {
-                PropKind::Furnace => &[(Item::Furnace, 1)],
-                PropKind::Torch => &[(Item::Torch, 1)],
-                PropKind::Bed => &[(Item::Bed, 1)],
-                PropKind::Wheat if crop.is_some_and(Crop::ripe) => &[(Item::Wheat, 1), (Item::Seeds, 2)],
-                PropKind::Wheat => &[(Item::Seeds, 1)],
-                PropKind::CraftingTable => &[(Item::CraftingTable, 1)],
-                PropKind::Chest => &[(Item::Chest, 1)],
-            };
-            give(&mut inventory, &mut toast, gained);
-            // Whatever was inside comes along.
-            let inside = furnace
-                .into_iter()
-                .flat_map(FurnaceState::contents)
-                .chain(chest.into_iter().flat_map(|c| c.slots.iter().flatten().copied()));
-            for stack in inside {
-                inventory.add_stack(stack);
-            }
         }
         Target::Block { cell, .. } => {
             let size = tool_settings.size;
@@ -352,7 +347,8 @@ fn primary(
             *work = Work::default();
             progress.0 = None;
             feedback.dug(&region, size, player.translation);
-            dig(&mut terrain, &mut inventory, &mut toast, &region, tool);
+            let items = dig(&mut terrain, &mut inventory, &mut toast, &region, tool);
+            feedback.drop(&items, region_center(&region, size));
         }
     }
 }
@@ -363,7 +359,7 @@ fn dig(
     toast: &mut Toast,
     region: &[(IVec3, Block)],
     tool: Option<Tool>,
-) {
+) -> Vec<(Item, u32)> {
     terrain.set_blocks(region.iter().map(|(c, _)| (*c, Block::AIR)));
     let pickaxe = tool.filter(|t| t.kind == ToolKind::Pickaxe).map(|t| t.tier);
     let mut counts: Vec<(Item, u32)> = Vec::new();
@@ -404,7 +400,7 @@ fn dig(
         Some(_) => toast.show("Алмазы добываются железной киркой или лучше".into()),
         None => {}
     }
-    give(inventory, toast, &counts);
+    counts
 }
 
 /// What one cell of a ruin's cache holds.
@@ -428,17 +424,6 @@ fn chance(cell: IVec3) -> f32 {
         ^ (cell.z as u32).wrapping_mul(83_492_791);
     h = h.wrapping_mul(2_654_435_761);
     (h >> 8) as f32 / 16_777_216.0
-}
-
-fn give(inventory: &mut Inventory, toast: &mut Toast, items: &[(Item, u32)]) {
-    let mut lost = 0;
-    for &(item, count) in items.iter().filter(|(_, n)| *n > 0) {
-        lost += inventory.add(item, count);
-        toast.show(format!("+{count} {}", item.name()));
-    }
-    if lost > 0 {
-        toast.show("Инвентарь полон".into());
-    }
 }
 
 /// Where a right click would build: the block's corner cell and the empty cells it fills
@@ -486,15 +471,17 @@ fn secondary(
     mut terrain: ResMut<Terrain>,
     mut inventory: ResMut<Inventory>,
     (mut vitals, mut toast): (ResMut<Vitals>, ResMut<Toast>),
-    (mut time_of_day, mut mode, mut open): (ResMut<TimeOfDay>, ResMut<NextState<Mode>>, ResMut<OpenContainer>),
-    prop_assets: Res<PropAssets>,
-    props: Query<&Prop>,
-    mut mobs: Query<(&mut Mob, &Transform), Without<Player>>,
-    (mut repeat, mut sounds, mut activate, mut summons): (
+    (time_of_day, mut mode, mut open): (Res<TimeOfDay>, ResMut<NextState<Mode>>, ResMut<OpenContainer>),
+    mut places: MessageWriter<Place>,
+    props: Query<(&Prop, &Transform), Without<Player>>,
+    (mobs, traders): (Query<(&Mob, &Transform), Without<Player>>, Query<&VillagerOf>),
+    (mut repeat, mut sounds, mut activate, mut summons, mut orders, mut sleep): (
         Local<f32>,
         MessageWriter<PlaySound>,
         MessageWriter<Activate>,
         MessageWriter<Summon>,
+        MessageWriter<Order>,
+        MessageWriter<Sleep>,
     ),
 ) {
     *repeat -= time.delta_secs();
@@ -510,7 +497,7 @@ fn secondary(
     if pressed {
         // Beds and furnaces work whatever is in hand.
         if let Target::Entity { entity, .. } = aim.0
-            && let Ok(prop) = props.get(entity)
+            && let Ok((prop, bed)) = props.get(entity)
         {
             match prop.0 {
                 PropKind::Furnace | PropKind::CraftingTable | PropKind::Chest => {
@@ -528,10 +515,14 @@ fn secondary(
                         toast.show("Точка возрождения сохранена. Спать можно только ночью".into());
                     } else if mobs.iter().any(|(m, t)| m.hostile() && t.translation.distance(feet) < SLEEP_SAFE_RADIUS)
                     {
-                        toast.show("Рядом зомби, уснуть не получится".into());
+                        toast.show("Рядом монстры, уснуть не получится".into());
                     } else {
-                        time_of_day.0 = MORNING;
-                        toast.show("Доброе утро! Точка возрождения сохранена".into());
+                        // Lie down along the bed, on top of it.
+                        transform.translation = bed.translation + Vec3::Y * 0.42;
+                        player.yaw = bed.rotation.to_euler(EulerRot::YXZ).0;
+                        sleep.write(Sleep(true));
+                        mode.set(Mode::Sleeping);
+                        toast.show("Точка возрождения сохранена".into());
                     }
                     return;
                 }
@@ -539,25 +530,29 @@ fn secondary(
             }
         }
 
+        // Villagers trade.
+        if let Target::Entity { entity, .. } = aim.0
+            && let Ok(of) = traders.get(entity)
+        {
+            commands.insert_resource(Market(of.0));
+            mode.set(Mode::Trade);
+            return;
+        }
+
         // Bones win wolves over; a dog sits or follows when clicked.
         if let Target::Entity { entity, .. } = aim.0
-            && let Ok((mut mob, _)) = mobs.get_mut(entity)
+            && let Ok((mob, _)) = mobs.get(entity)
         {
             if mob.tame {
-                mob.sitting = !mob.sitting;
-                toast.show(if mob.sitting { "Пёс сидит" } else { "Пёс идёт за вами" }.into());
+                orders.write(Order { mob: entity, order: OrderKind::Sit });
                 return;
             }
-            if mob.kind == MobKind::Wolf && selected.is_some_and(|s| s.item == Item::Bone) {
+            if mob.kind == MobKind::Wolf && mob.alive() && selected.is_some_and(|s| s.item == Item::Bone) {
                 if !creative.0 {
                     inventory.consume_selected(1);
                 }
                 let roll = rand01(entity.to_bits() as u32 ^ (time.elapsed_secs() * 1000.0) as u32);
-                toast.show(if mob.tame_with_bone(roll) {
-                    "Волк приручён! Теперь это ваш пёс".into()
-                } else {
-                    "Волк не доверяет вам. Ещё кость?".into()
-                });
+                orders.write(Order { mob: entity, order: OrderKind::Tame(roll) });
                 return;
             }
         }
@@ -637,13 +632,7 @@ fn secondary(
             let to_player = (feet - point).with_y(0.0);
             let yaw = (-to_player.x).atan2(-to_player.z);
             let at = point.with_y((cell.y + 1) as f32 * CELL);
-            props::spawn(
-                &mut commands,
-                &prop_assets,
-                kind,
-                Transform::from_translation(at).with_rotation(Quat::from_rotation_y(yaw)),
-                0.0,
-            );
+            places.write(Place { kind, at, yaw });
             sounds.write(PlaySound::at(Sfx::Place, at));
             if !creative.0 {
                 inventory.consume_selected(1);

@@ -123,6 +123,8 @@ pub struct Terrain {
     loaded: HashMap<IVec3, ChunkBlocks>,
     bounds: HashMap<(u8, IVec2), (f32, f32)>,
     water: HashMap<IVec2, Option<Entity>>,
+    /// Local edits not yet passed on to other players.
+    journal: Vec<(IVec3, Block)>,
 }
 
 #[derive(Default)]
@@ -164,6 +166,7 @@ impl Terrain {
             loaded: HashMap::new(),
             bounds: HashMap::new(),
             water: HashMap::new(),
+            journal: Vec::new(),
         }
     }
 
@@ -188,6 +191,11 @@ impl Terrain {
     /// Where a rift sets someone down in the Shards.
     pub fn shards_arrival(&self) -> Vec3 {
         shards::arrival(&self.store.generator().shards)
+    }
+
+    /// Where trees were generated within `radius` of `center` (some may be felled since).
+    pub fn trees_near(&self, center: Vec3, radius: f32) -> Vec<Vec3> {
+        self.store.generator().trees_near(center, radius)
     }
 
     /// The closest ruin to a point: what it is and the middle of its floor.
@@ -235,8 +243,16 @@ impl Terrain {
         self.store.generator().sample(cell.as_vec3() * CELL, CELL, 1, true)[0]
     }
 
-    /// Changes blocks and schedules the affected meshes for rebuilding.
+    /// Changes blocks and schedules the affected meshes for rebuilding; the changes are also
+    /// kept for the network to pass on (see [`Terrain::take_journal`]).
     pub fn set_blocks(&mut self, changes: impl IntoIterator<Item = (IVec3, Block)>) {
+        let changes: Vec<_> = changes.into_iter().collect();
+        self.journal.extend(&changes);
+        self.apply(changes);
+    }
+
+    /// Changes that came over the network: applied, but not passed on again.
+    pub fn apply(&mut self, changes: impl IntoIterator<Item = (IVec3, Block)>) {
         let loaded = &self.loaded;
         let dirty = self.store.set_blocks(changes, |chunk| loaded.get(&chunk).cloned());
         for chunk in dirty {
@@ -325,6 +341,11 @@ impl Terrain {
         let pending = self.chunks.values().filter(|c| c.task.is_some()).count();
         let triangles = self.chunks.values().filter(|c| c.entity.is_some()).map(|c| c.triangles).sum();
         (shown, pending, triangles)
+    }
+
+    /// Blocks changed here since the last call.
+    pub fn take_journal(&mut self) -> Vec<(IVec3, Block)> {
+        std::mem::take(&mut self.journal)
     }
 
     pub fn edits_snapshot(&self) -> EditsSnapshot {

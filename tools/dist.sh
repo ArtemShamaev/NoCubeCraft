@@ -7,10 +7,12 @@ cd "$(dirname "$0")/.."
 mkdir -p dist
 
 nice -n 19 cargo build --release
-cp target/release/nocubecraft dist/NoCubeCraft.x86_64
+cp target/release/nocubecraft dist/NoCubeCraft.x86_64.new
+mv -f dist/NoCubeCraft.x86_64.new dist/NoCubeCraft.x86_64
 
 if [ "$1" != "--linux-only" ]; then
     nice -n 19 cargo build --release --target x86_64-pc-windows-gnu
-    cp target/x86_64-pc-windows-gnu/release/nocubecraft.exe dist/NoCubeCraft.exe
+    cp target/x86_64-pc-windows-gnu/release/nocubecraft.exe dist/NoCubeCraft.exe.new
+    mv -f dist/NoCubeCraft.exe.new dist/NoCubeCraft.exe
 fi
 ls -lh dist

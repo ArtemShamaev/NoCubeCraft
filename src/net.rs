@@ -224,8 +224,12 @@ pub fn host(commands: &mut Commands, channels: &RepliconChannels) -> std::io::Re
     commands.insert_resource(RenetServer::new(connection(channels)));
     commands.insert_resource(NetcodeServerTransport::new(config, socket)?);
     // Not finding the world on the home network is no reason not to host it.
-    match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT)).and_then(|s| s.set_nonblocking(true).map(|_| s)) {
-        Ok(socket) => commands.insert_resource(Beacon(socket)),
+    match UdpSocket::bind((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT)).and_then(|s| {
+        s.set_nonblocking(true)?;
+        s.set_broadcast(true)?;
+        Ok(s)
+    }) {
+        Ok(socket) => commands.insert_resource(Beacon { socket, since: f32::INFINITY }),
         Err(e) => warn!("no discovery on the home network: {e}"),
     }
     Ok(())
@@ -234,21 +238,75 @@ pub fn host(commands: &mut Commands, channels: &RepliconChannels) -> std::io::Re
 /// This computer's address on the home network, to tell the other players.
 pub fn local_ip() -> Option<IpAddr> {
     let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+    // A VPN may route internet traffic through a different interface than the home network.
+    #[cfg(target_os = "linux")]
+    if let Some((gateway, _)) = linux_lan_route() {
+        if socket.connect((gateway, 80)).is_ok() {
+            return Some(socket.local_addr().ok()?.ip());
+        }
+    }
     // Connecting a UDP socket sends nothing; it only picks the outgoing interface.
     socket.connect((Ipv4Addr::new(8, 8, 8, 8), 80)).ok()?;
     Some(socket.local_addr().ok()?.ip())
 }
 
+/// The default gateway and its subnet broadcast, read without invoking system commands.
+#[cfg(target_os = "linux")]
+fn linux_lan_route() -> Option<(Ipv4Addr, Ipv4Addr)> {
+    linux_lan_route_from(&std::fs::read_to_string("/proc/net/route").ok()?)
+}
+
+#[cfg(target_os = "linux")]
+fn linux_lan_route_from(table: &str) -> Option<(Ipv4Addr, Ipv4Addr)> {
+    let routes: Vec<_> = table
+        .lines()
+        .skip(1)
+        .filter_map(|line| {
+            let fields: Vec<_> = line.split_whitespace().collect();
+            Some((
+                *fields.first()?,
+                u32::from_str_radix(fields.get(1)?, 16).ok()?,
+                u32::from_str_radix(fields.get(2)?, 16).ok()?,
+                u32::from_str_radix(fields.get(3)?, 16).ok()?,
+                fields.get(6)?.parse::<u32>().ok()?,
+                u32::from_str_radix(fields.get(7)?, 16).ok()?,
+            ))
+        })
+        .collect();
+    let (interface, _, gateway, _, _, _) = routes
+        .iter()
+        .filter(|(_, destination, gateway, flags, _, _)| *destination == 0 && *gateway != 0 && flags & 3 == 3)
+        .min_by_key(|(_, _, _, _, metric, _)| *metric)?;
+    let (_, destination, _, _, _, mask) = routes.iter().find(|(name, destination, via, flags, _, mask)| {
+        name == interface && *via == 0 && flags & 1 != 0 && *mask != 0 && gateway & mask == *destination
+    })?;
+    Some((Ipv4Addr::from(gateway.to_le_bytes()), Ipv4Addr::from((destination | !mask).to_le_bytes())))
+}
+
 /// The host's side of discovery: answers probes with the host's name.
 #[derive(Resource)]
-struct Beacon(UdpSocket);
+struct Beacon {
+    socket: UdpSocket,
+    since: f32,
+}
 
-fn answer_probes(beacon: Res<Beacon>, settings: Res<Settings>) {
+fn answer_probes(mut beacon: ResMut<Beacon>, time: Res<Time<Real>>, settings: Res<Settings>) {
+    let answer = [ANSWER, settings.player_name.as_bytes()].concat();
+    beacon.since += time.delta_secs();
+    if beacon.since >= 1.0 {
+        beacon.since = 0.0;
+        // Announce from the LAN interface so clients can find us even if their
+        // own broadcast probes leave through a VPN.
+        #[cfg(target_os = "linux")]
+        let broadcast = linux_lan_route().map_or(Ipv4Addr::BROADCAST, |(_, broadcast)| broadcast);
+        #[cfg(not(target_os = "linux"))]
+        let broadcast = Ipv4Addr::BROADCAST;
+        let _ = beacon.socket.send_to(&answer, (broadcast, DISCOVERY_PORT));
+    }
     let mut buf = [0; 64];
-    while let Ok((n, from)) = beacon.0.recv_from(&mut buf) {
+    while let Ok((n, from)) = beacon.socket.recv_from(&mut buf) {
         if &buf[..n] == PROBE {
-            let answer = [ANSWER, settings.player_name.as_bytes()].concat();
-            let _ = beacon.0.send_to(&answer, from);
+            let _ = beacon.socket.send_to(&answer, from);
         }
     }
 }
@@ -263,7 +321,10 @@ pub struct Search {
 
 impl Search {
     pub fn start() -> Option<Self> {
-        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)).ok()?;
+        // Listening on the discovery port also receives unsolicited host announcements.
+        let socket = UdpSocket::bind((Ipv4Addr::UNSPECIFIED, DISCOVERY_PORT))
+            .or_else(|_| UdpSocket::bind((Ipv4Addr::UNSPECIFIED, 0)))
+            .ok()?;
         socket.set_broadcast(true).ok()?;
         socket.set_nonblocking(true).ok()?;
         Some(Self { socket, since: f32::INFINITY, found: Vec::new() })
@@ -276,6 +337,11 @@ fn search(time: Res<Time<Real>>, search: Option<ResMut<Search>>) {
     if search.since > 1.0 {
         search.since = 0.0;
         let _ = search.socket.send_to(PROBE, (Ipv4Addr::BROADCAST, DISCOVERY_PORT));
+        // Limited broadcast can leave through a VPN. The subnet address reaches the LAN.
+        #[cfg(target_os = "linux")]
+        if let Some((_, broadcast)) = linux_lan_route() {
+            let _ = search.socket.send_to(PROBE, (broadcast, DISCOVERY_PORT));
+        }
     }
     let mut buf = [0; 128];
     while let Ok((n, from)) = search.socket.recv_from(&mut buf) {
@@ -542,5 +608,19 @@ fn keep_guests(mut saves: MessageReader<FromClient<SavePlayer>>, mut guests: Res
         if let Some(guest) = save.client_id.entity().and_then(|c| names.get(c).ok()) {
             guests.0.insert(guest.name.clone(), save.message.0.clone());
         }
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn finds_lan_broadcast_despite_vpn_route() {
+        let table = "Iface Destination Gateway Flags RefCnt Use Metric Mask MTU Window IRTT\n\
+                     wlan0 00000000 0101A8C0 0003 0 0 600 00000000 0 0 0\n\
+                     tun0 000012AC 00000000 0001 0 0 0 FCFFFFFF 0 0 0\n\
+                     wlan0 0001A8C0 00000000 0001 0 0 600 00FFFFFF 0 0 0\n";
+        assert_eq!(linux_lan_route_from(table), Some((Ipv4Addr::new(192, 168, 1, 1), Ipv4Addr::new(192, 168, 1, 255))));
     }
 }
